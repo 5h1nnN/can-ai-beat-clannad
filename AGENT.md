@@ -280,7 +280,7 @@
 
 ### 阶段 0/1 实际操作要点（2026-09-04 实测）
 
-1. **运行入口（窗口形态）**：`target\debug\siglus_engine.exe --project-dir E:\SteamLibrary\steamapps\common\CLANNAD`；配合自动化按键脚本 `run_engine_click.ps1`（向窗口发 Enter）。
+1. **运行入口（窗口形态）**：`target\debug\siglus_engine.exe --project-dir E:\SteamLibrary\steamapps\common\CLANNAD`；配合自动化按键脚本 `diagnostics/scripts/run_engine_click.ps1`（向窗口发 Enter）。
 2. **无头文本验证（新增 bin）**：`target\debug\clannad_probe.exe --project <游戏根> --scene seen0414 --frames 1500 --click --click-every 40`。设置 `SIGLUS_LANGUAGE=ZH` 得到简体中文列（默认 JP 列）。探针逐帧 tick + 注入 Enter，打印 `scene/line/blocked/name/text/choices`（文本直接读 VM 的 `MwndState.msg_text/name_text`，即阶段 2 状态导出的基础）。
 3. **语言列**：textXX.dbs 第 0 列=日文、第 2 列=简中；脚本经 `SYSTEM.GET_LANGUAGE`（`ctx.globals.system.language_code`，可用环境变量 `SIGLUS_LANGUAGE` 或配置覆盖）选列。
 4. **已知噪音（可接受）**：开局旧式 name-template 链 `[108]/[131]/[158]` 未实现 → 现已 warn-once 跳过（名字窗可能缺定制名字，文本不受影响）；`database.name.missing:DATABASE.21` 为 cgmodetbl 表名缺失，无碍推进。
@@ -294,9 +294,9 @@
 | debug 构建 `multiply with overflow` 崩溃（text_render.rs:1890）| 像素混合 `u16` 乘法 255³ 溢出 | 改 u32 运算（语义不变）|
 | scene_trace/纯 run() 空转 | 场景 wait（timewait/翻页等待）需帧 tick 驱动 | 无头用 `run_script_proc + tick_frame`（title_probe/clannad_probe 模式）|
 
-> 说明：`siglus_ss_decompiler`（本仓库自带）可把场景反编译为可读 .ss（如 `stage1_evidence\seen0414.ss`），是排查演出脚本的利器。
+> 说明：`siglus_ss_decompiler`（本仓库自带）可把场景反编译为可读 .ss（如 `diagnostics/evidence/seen0414.ss`），是排查演出脚本的利器。
 
-### 证据文件（`E:\7_projects\clannad_mcp\stage1_evidence\`）
+### 证据文件（`E:\7_projects\clannad_mcp\diagnostics\evidence\`）
 - `capture_click2.png`（1.9MB）——窗口版标题画面 `_system_title` 渲染帧
 - `engine_click2.err.log` —— 窗口版全流程日志（scene=_system_title 于 3000 帧）
 - `probe_0414_zh.log` —— 无头 ZH 探针输出（幻想世界 seen6900 → seen0414，朋也名字窗、中文对白逐行）
@@ -327,7 +327,7 @@
 ### 本机环境
 - Rust：`E:\.rustup` / `E:\.cargo`（stable-x86_64-pc-windows-gnu 1.98.1），User 环境变量已持久化；crates.io 直连可用，如需可配 rsproxy 镜像
 - 工具二进制：`E:\7_projects\clannad_mcp\siglus_rs\target\debug\{siglus_engine,scene_trace,clannad_probe,siglus_ss_decompiler}.exe`
-- 复现窗口版标题：`powershell -File E:\7_projects\clannad_mcp\run_engine_click.ps1`
+- 复现窗口版标题：`powershell -File E:\7_projects\clannad_mcp\diagnostics\scripts\run_engine_click.ps1`
 - 复现无头 ZH 对白：`set SIGLUS_LANGUAGE=ZH && target\debug\clannad_probe.exe --project E:\SteamLibrary\steamapps\common\CLANNAD --scene seen0414 --click`
 
 ---
@@ -352,7 +352,7 @@
 
 ### 待办（依赖用户复测反馈）
 - 用户确认用新 debug/release 重测 NEW GAME / CONFIG / LOAD；
-- 若仍有闪退：用户跑 `E:\7_projects\clannad_mcp\user_repro_capture.ps1` 复现，回传 `userrun_*.err.log`（含 RUST_BACKTRACE=full）；
+- 若仍有闪退：用户跑 `E:\7_projects\clannad_mcp\diagnostics\scripts\user_repro_capture.ps1` 复现，回传 `diagnostics/logs/userrun_*.err.log`（含 RUST_BACKTRACE=full）；
 - LOAD 页 11fps 优化留待后续（页面合成热点需 profile）。
 
 ---
@@ -364,7 +364,7 @@
   - 已确认并实现此前被跳过的 `GLOBAL.GET_SCENE_NAME/GET_LINE_NO`（131/158）→ 配置场景内不再有 skipped chain，但空内容仍复现（还需更深根因）；
   - fork(AetherSiglus) 的改动聚焦名字窗布局/存档，非配置 UI，不直接适用。
 - 存档目录事实：引擎用 `<project>/savedata`（命中原版 SAVEDATA，即真实 Steam 存档）。
-- 下一步：等用户复测（含 user_repro_capture.ps1 日志）或提供“是否连面板/边框都没有”等界面细节，再沿 syscom 自定义 UI 机制追（CLANNAD config 为自研 EXCALL UI）。
+- 下一步：等用户复测（含 diagnostics/scripts/user_repro_capture.ps1 日志）或提供“是否连面板/边框都没有”等界面细节，再沿 syscom 自定义 UI 机制追（CLANNAD config 为自研 EXCALL UI）。
 
 ---
 
@@ -403,8 +403,15 @@
 - [ ] （minor）返回标题需两次左键（覆盖层退出后 focus/button-group 复位）
 
 ### 14.6 工具/命令速查
-- 抓日志复现：`powershell -ExecutionPolicy Bypass -File E:\7_projects\clannad_mcp\user_repro_capture.ps1`（输出 `userrun_*.err.log`，含 RUST_BACKTRACE=full）
+- 抓日志复现：`powershell -ExecutionPolicy Bypass -File E:\7_projects\clannad_mcp\diagnostics\scripts\user_repro_capture.ps1`（输出 `diagnostics/logs/userrun_*.err.log`，含 RUST_BACKTRACE=full）
 - 运行引擎：`E:\7_projects\clannad_mcp\siglus_rs\target\debug\siglus_engine.exe --project-dir "E:\SteamLibrary\steamapps\common\CLANNAD"`（release 版性能更好）
 - 无头对白/状态探针：`target\debug\clannad_probe.exe --project <游戏根> --scene seen0414 --click`；`SIGLUS_LANGUAGE=ZH` 取简中列
 - 诊断口：`set SG_STAGE_DUMP=1`（内容/提交计数，需打开对应页面时查看）
-- 证据：`stage1_evidence\`（标题截图/日志/脚本反编译/场景索引）
+- 证据：`diagnostics\evidence\`（标题截图/日志/脚本反编译/场景索引）——测试产物统一归档于 `diagnostics\`（logs/screenshots/scripts/evidence），已被 `.gitignore` 忽略，不入库
+
+### 14.7 项目结构（本仓库=clannad_mcp 父仓库 + 子仓库 siglus_rs）
+- 父仓库 `E:\7_projects\clannad_mcp`（git）：由 `AGENT.md` + `.gitignore` + `.gitmodules` 组成，并把 `siglus_rs` 作为**子仓库(gitlink)** 固定到提交指针。
+- `siglus_rs`：已重定向 `origin` → `https://github.com/5h1nnN/siglus_rs.git`（不再指向 xmoezzz/siglus_rs），已把全部改动推送到 fork（`main` @ `63e3578`）。
+- `diagnostics\`：测试截图/日志/脚本/反编译证据（本地，.gitignore 忽略）。
+- 首次克隆本仓库后：`git submodule update --init` 即可拉取 fork 的 siglus_rs。
+- 说明：本地 `siglus_rs` 直接保留了原克隆的 8GB 构建产物（`target/` 已被子仓库自身的 .gitignore 忽略），无需重编、未删除目录；“删除 xmoezzz/siglus_rs” 落实为**移除对上游的引用**（origin 已指向 fork）。
