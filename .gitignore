@@ -1,0 +1,16 @@
+﻿# Test/diagnostic artifacts moved into diagnostics/ (logs, screenshots, scripts, evidence)
+diagnostics/
+*.log
+*.png
+*.ss
+*.ps1
+
+# Build/runtime artifacts
+target/
+dist/
+.venv/
+__pycache__/
+
+# Godot/editor noise
+.idea/
+.vscode/

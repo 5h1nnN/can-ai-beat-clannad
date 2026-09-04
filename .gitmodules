@@ -1,0 +1,4 @@
+[submodule "siglus_rs"]
+	path = siglus_rs
+	url = https://github.com/5h1nnN/siglus_rs.git
+	branch = main

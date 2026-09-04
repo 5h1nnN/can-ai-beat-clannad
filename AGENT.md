@@ -1,0 +1,410 @@
+# CLANNAD Steam 中文版 —— MCP 实时控制 · 已定稿执行计划
+
+> 目标：让 **AI agent 能实时读取并操作 CLANNAD**——暴露实时游戏状态（场景/行号/对话文本/选项），并提供 SL（存取档）/选择/推进/跳转等操作接口，封装成 **MCP 服务**。
+> 最近更新：2026-09-04 · 状态：**✅ 阶段 0/1 已完成（跑起中文版，验证标题+中文对白），待开始阶段 2**
+> 本文档是后续所有工作的**上下文与计划基准**；新会话请先读本文档。
+
+---
+
+## 0. 已确认决策
+
+| # | 决策 | 结论 |
+|---|---|---|
+| D1 | 技术路线 | **路线 A：基于开源引擎重实现 `siglus_rs` 作游戏内核**（已 clone 于 `e:\dev\siglus_rs`）。不做 hook 原版闭源 exe。 |
+| D2 | 运行形态 | **暂保持窗口形态**：跑 `siglus_engine`（siglus_rs 自带窗口版）显示画面，旁路桥接 MCP。headless 仅作为后续可选项（阶段 5）。 |
+| D3 | 中文适配 | `SceneZH.pck` 复制为 `Scene.pck`（保底）+ `key.toml` 放 CLANNAD key；`GameexeZH.dat` 引擎已原生识别。 |
+| D4 | 文本来源 | 对白以 VM 内部状态为准（dbs 运行期解析），不 OCR。暴露中日对照条目。 |
+
+---
+
+## 1. 结论摘要（TL;DR）
+
+| 项 | 结论 |
+|---|---|
+| 能否实现 | ✅ 可行 |
+| 技术路线 | **`siglus_rs`（Rust 重实现 SiglusEngine）作内核** + 状态/控制接口 + MCP Server |
+| 运行形态 | **窗口形态**（可见画面）+ 旁路桥接 |
+| 中文版适配 | siglus_rs 已内置 `GameexeZH.dat` 支持；`SceneZH.pck` 复制为 `Scene.pck`（或补丁）；CLANNAD key 经 `key.toml` |
+| 本机前置 | 需安装 **Rust 工具链**（当前无 cargo/rustc，C 盘仅 11.4GB → 装 E 盘） |
+| 工作量 | 完整版约 2–4 天有效工时（见 §7 里程碑） |
+| 仓库 | `e:\dev\siglus_rs` @ commit `577d9c8`（= 官方 pre-release） |
+
+---
+
+## 2. 关键事实（已在本机验证 / 源码确认）
+
+### 2.1 游戏本体
+- 引擎：`SiglusEngine_Steam.exe`，VisualArt's Siglus **1.1.134.0**，32 位闭源，无符号
+- 场景包：`SceneZH.pck`（228 个 `.ss` 演出/流程脚本，CLANNAD 专属 key 加密）
+- 对白库：`dat/text00.dbs` ~ `text23.dbs` —— **日文原文 + 中文译文双列**
+- 配置：`GameexeZH.dat`（解出即 `CLANNAD HD` 的 `Gameexe.ini`）
+- 存档：`savedata_zh/*.sav`（加密二进制）
+
+### 2.2 文本机制（重要！）
+- `.ss` 场景脚本**不含剧情对白**，只有演出指令（bg/cg/bgm/se）与系统文本（逐字/短词存储）
+- 场景通过对白标签 **`sdtaXXXX`**（如 `sdta0414`）关联到 dbs 对白库
+- 真正的剧情文本在 `text*.dbs`，需 **VM 运行期**解析 dbs 后才知道"当前这句话"
+- ⇒ 结论：**"当前对话文本"只能在真正的运行时 VM 里获得**，静态解包拿不到
+
+### 2.3 工具现状
+- `SiglusEngine-master/`（Python）：✅ 已验证可完整解包 SceneZH.pck / dbs / GameexeZH.dat。仅静态，无运行时。
+- `SiglusExtract.exe/.dll`（X'moe MFC）：❌ 本机运行即崩 `0xC0000005`，且面向旧零售版。
+
+### 2.4 开源引擎重实现 siglus_rs（github.com/xmoezzz/siglus_rs）
+源码确认：
+- **完整 SiglusEngine VM**：脚本执行、资源加载、渲染(wgpu)、音频、**SL 架构**（`menu_save_slot` / `menu_load_slot` / `write_global_save` / `restore_last_sel_point`）
+- **宿主 C ABI**（Windows/macOS/Linux）：
+  ```c
+  SiglusPumpHandle* siglus_pump_create(const char* game_root_utf8);
+  int32_t  siglus_pump_step(SiglusPumpHandle*, uint32_t timeout_ms);   // 逐帧推进
+  void     siglus_pump_key_down/up(SiglusPumpHandle*, int32_t key);    // 注入按键
+  void     siglus_pump_text_input(SiglusPumpHandle*, const char*);     // 文本
+  void     siglus_pump_submit_messagebox_result(SiglusPumpHandle*, u64, i64);
+  void     siglus_pump_destroy(SiglusPumpHandle*);
+  int32_t  siglus_run_entry(const char* game_root_utf8);              // 完整窗口模式
+  ```
+- **状态已结构化**：`vm.current_scene_name()` / `current_line_no()` / `is_blocked()` / 消息框 / 选择按钮 `selbtn` / `syscom.pending_proc` 全部是**内部数据字段**，可直接导出
+- **中文版适配痕迹**：`find_gameexe_path` 候选含 `GameexeZH.dat`/`GameexeZH.ini`；`GameexeEN/ZHTW/DE/ES/FR...` 一并列出 → 作者已为多语言版设计
+- key 机制：项目目录放 `key.toml`，**顶层字段为 `key = [0x.. ×16]`**（源码 `key_toml.rs` 解析为内部 `exe_key16`，注意不要照抄内部字段名写成 `exe_key16=`）；`ScenePckDecodeOptions` = 静态 256B `SCENE_KEY` + 可选 16B exe key；PSB/Emote 另用独立 `emote_key` 字段
+- ⚠️ **限制**：`find_scene_pck_path` 目前只认 `Scene.pck` / `Data/Scene.pck`，**不含 `SceneZH.pck`** → 需适配
+- 有 **release**（pre-release 577d9c8，2 天前滚动发布，11 assets），作者活跃推进
+
+---
+
+## 3. 路线对比
+
+### 路线 A：siglus_rs 内核 + MCP（✅ 已采用）
+```
+                    ┌─────────────────────────────────────────┐
+  MCP Client (agent)│  MCP Server (Python)                   │
+                    │   ├─ 读取: get_status / get_dialogue    │
+                    │   ├─ 控制: choose / save / load / jump  │
+                    │   └─ 会话变量: set/get_game_variable    │
+                    └──────────────┬──────────────────────────┘
+                    命名管道/共享内存 │ 状态JSON + 指令队列
+                    ┌──────────────▼──────────────────────────┐
+                    │ siglus_engine 窗口版 (siglus_rs)         │
+                    │  = 完整 Siglus VM + 渲染(wgpu) + SL      │
+                    │  新增: host 状态导出 / 指令消费 / 变量表  │
+                    └─────────────────────────────────────────┘
+```
+- ✅ 内部状态全部可获得（对话文本 = dbs 当前条目）
+- ✅ 逐帧 pump、可注入按键/鼠标/文本 → 天然支持 agent 驱动
+- ✅ 开源，可深度定制，无需逆向闭源 exe
+- ⚠️ 需装 Rust；需少量适配 `SceneZH.pck` 命名；渲染用 wgpu（Win10/11 可）
+
+### 路线 B：hook 原版 `SiglusEngine_Steam.exe`
+- 需在 32 位无符号 exe 内逆向定位：文本渲染函数、dbs 文本缓冲区指针、选择状态、存档结构
+- 对白文本在运行期从 dbs 动态加载 → 要 hook dbs 读取/解码路径才能拿到"当前句"
+- 同族工具 `SiglusExtract.exe`（X'moe 自己写的同类 hook）本机已崩溃 → 基建风险高
+- ❌ 不推荐（除非路线 A 因渲染/兼容受阻）
+
+**已决策：路线 A（见 §0 D1）。**
+
+---
+
+## 4. CLANNAD 中文版具体适配点
+
+1. **SceneZH.pck 命名**
+   - `scene_trace`/`siglus_engine` 走 `find_scene_pck_path` 时只认 `Scene.pck`，但 **`scene_trace --pck SceneZH.pck` 可直接指定路径 → 无头验证零改动**
+   - 完整引擎（`siglus_engine`）需在项目目录放 `Scene.pck`（复制/硬链 ← `SceneZH.pck`），或给 `find_scene_pck_path`（`crates/siglus_scene_vm/src/resource.rs`）补丁加入 `SceneZH.pck` 候选（可顺手提上游 PR）
+2. **CLANNAD key**
+   - 在游戏根放 `key.toml`（README 格式）：
+     ```toml
+     key = [0x3B, 0x54, 0xDC, 0x74, 0x2F, 0xBA, 0x0C, 0xD6, 0xAC, 0x08, 0xD2, 0x23, 0xEC, 0x60, 0xA9, 0x2E]
+     ```
+   - 静态 `SCENE_KEY`（256B）已在 `siglus_assets::keys`，无需改
+3. **GameexeZH.dat** → siglus_rs 已自动识别 ✅（无需动作）
+4. **文本来源**：对白来自 `text*.dbs`（经 `sdtaXXXX`）。MCP 的"当前对话"应暴露 **dbs 中日对照的当前条目**（日文原文 + 中文译文），这正是中文版双列的好处
+
+---
+
+## 5. MCP Server 设计（目标接口）
+
+> 形态：**窗口形态**（见 §0 D2）。MCP Server（Python，stdio 协议）作为独立进程运行；通过 **命名管道/共享内存** 与窗口版 `siglus_engine`（siglus_rs 宿主）双向通信——Server 读状态、发指令。状态以结构化 JSON 返回。
+
+### 5.1 状态类工具（读取）
+| 工具 | 返回 |
+|---|---|
+| `get_status` | 当前场景名、场景号、行号、是否阻塞/等待、播放中BGM/演出 |
+| `get_dialogue` | 当前说话人、日文原文、中文译文、dbs源、是否已到选择点 |
+| `get_choices` | 若在选择点：选项列表（中日文）、当前高亮 |
+| `get_save_list` | 存档槽列表（时间、场景摘要） |
+| `get_flags` | 关键剧情 flag / read 进度（可选，后期） |
+
+### 5.2 操作类工具（控制）
+| 工具 | 效果 |
+|---|---|
+| `advance` / `do_click` | 推进对话 / 确认（等价点击/回车） |
+| `choose(index)` | 在选择点选第 N 项 |
+| `save(slot)` | 写入指定存档槽（复用 `menu_save_slot`+`write_global_save`） |
+| `load(slot)` | 读取存档（复用 `menu_load_slot`） |
+| `jump(scene[,z])` | 直接跳转某场景（`restart_scene_name`） |
+| `skip(to_next_choice)` | 快进到下一选项（设置 skip/auto 状态机） |
+| `open_menu(kind)` | 打开系统菜单/返回标题 |
+
+### 5.3 会话全局变量（agent 会话内状态，重要设计点）
+
+> 背景：agent 需要"当次会话内"设定/读取一些全局量，例如**存档数量上限**、**进入坏结局次数**、当前扮演策略、禁止触碰的 flag 区间等。MCP 协议本身无此设施，但**在 MCP Server 进程内维护一张变量表**即可实现（每次 `tools/call` 虽是独立请求，但 server 进程在同一会话内常驻、共享状态）。
+
+**语义分层（务必区分，决定变量存哪一层）：**
+
+| 变量类别 | 示例 | 存放层 | 生命周期 |
+|---|---|---|---|
+| ① agent 会话内约定（仅供 agent 参考/自约束） | 存档上限=3、本次走渚线、不用跳转 | **MCP Server 内存表** | 会话结束即失 |
+| ② 引擎强制生效（引擎必须真正执行） | 真的只允许 N 个槽；坏结局后重置本线 | **siglus_rs 内核**（`globals.extra_vars` 新增），MCP 负责传入 | 随引擎运行 |
+| ③ 自动统计（应由事件驱动，禁 agent 手写） | 进入坏结局次数、已读行数、当前周目 | 桥接层**事件累加**，MCP 只读 | 会话/落盘 |
+| ④ 跨会话长期记录 | 累计通关次数、全 CG 进度 | 落盘 `state.json`，启动加载 | 持久 |
+
+**对应 MCP 工具设计：**
+- `set_game_variable(name, value, scope=session|engine|persistent)` —— 写变量
+- `get_game_variable(name)` —— 读变量（含自动统计的只读项）
+- `list_game_variables()` —— 列出当前全部变量（便于 agent 复盘）
+- 引擎强制项（如存档上限）由桥接层在下发 `save()` 前检查，或由引擎内核读取 `globals.extra_vars` 直接拦截
+
+**关键原则：**
+- ② 要真正"强制"必须下沉到引擎内核，不能只靠 agent 自觉；
+- ③（坏结局次数这类）应由桥接层**在检测到 ending/flag 时自动 +1**，agent 只读，避免漏数/数错；
+- 变量表建议以 JSON 序列化存于 MCP Server 内存，可按 scope 决定是否落盘。
+
+### 5.4 事件推送（可选，便于 agent 实时响应）
+- `dialogue.changed`、`choice.appeared`、`save.completed`、`game_variable.changed`（通过 MCP `notifications` / SSE）
+
+---
+
+## 6. siglus_rs 侧需要新增的"桥"（含代码级挂载点）
+
+> 已 clone 源码到 `E:\7_projects\clannad_mcp\siglus_rs`（commit `577d9c8`，与最新 pre-release 一致）并定位到精确挂载点。以下均为**已读源码确认**的改动位置。
+
+### 6.1 状态导出挂载点（读）
+| 数据 | 位置（源码） | 说明 |
+|---|---|---|
+| 当前场景/行号 | `SiglusHost::debug_status_summary()` / `vm.current_scene_name()/current_line_no()` | 已存在，直接用 |
+| **当前对话文本** | `crates/.../forms/stage.rs` → `cd_text_current_mwnd()` 内 `m.msg_text.push_str(accepted)`；`ctx.ui.append_message()` | 加一行：把 `accepted` 写入共享状态/回调即可 |
+| **当前说话人** | `stage.rs` → `cd_name_current_mwnd()` 内 `m.name_text` | 同上 |
+| 消息框/翻页状态 | `MwndState`（`globals.rs`）含 `msg_text`、分页、按键图标、`key_icon_appear` 等 | 结构化，直接导出 |
+| 选择按钮状态 | `MwndSelectionState` / `MwndSelectionChoice` / `BtnSelItemState`（`globals.rs`） | 选项列表可直接枚举 |
+| 阻塞/等待类型 | `ctx.wait` / `is_blocked()` / `flow.stack` | 判断"在等什么" |
+| 存档槽 | `syscom::menu_save_slot / menu_load_slot / write_global_save` | 已有实现，MCP 直接调 |
+
+### 6.2 控制注入挂载点（写）
+| 操作 | 方式 |
+|---|---|
+| 推进/点击 | `SiglusHost::key_down(Enter)` 或 `mouse_down` / `touch`；或直接调 VM 的按键处理 |
+| 选择第 N 项 | 设置选择状态结果 / 模拟对应按键坐标 |
+| 存档/读档 | 直接调 `syscom::menu_save_slot(ctx,..)` + `write_global_save` / `menu_load_slot(ctx,..)` |
+| 跳场景 | `vm.restart_scene_name(&scene, z)`（`perform_return_to_menu` 同款） |
+| 快进 | 设 `script.skip_trigger` / `auto_mode_flag`（`ScriptRuntimeState`） |
+| **会话变量/引擎强制项** | 新增 `globals.extra_vars: HashMap<String,Value>`（或挂 `CommandContext`）；存/读档上限等由 `syscom::menu_save_slot` 读取该表决定是否放行；坏结局计数由桥接层检测 ending flag 时自动累加 |
+
+### 6.3 桥接形态（已定：窗口形态）
+
+- **✅ 窗口形态 + 旁路（已定 D2）**：跑 `siglus_engine`（siglus_rs 自带窗口版，渲染 wgpu，显示可见画面）。桥接层通过 **命名管道/共享内存** 与 MCP Server 通信：
+  - 每帧 step 后，宿主把状态 JSON（scene/line/对话/选项/阻塞）写到共享区
+  - MCP 指令（点击/选择/存读档/跳转）写入命令队列，宿主消费
+  - 好处：agent 驱动同时**人可见过程**；引擎渲染问题可独立调试
+- 嵌入式（无头）保留为阶段 5 可选项，本阶段不做
+
+### 6.4 无头验证入口（阶段 1 用，无需渲染）
+- `crates/siglus_scene_vm/src/bin/scene_trace.rs`：`scene_trace --pck <SceneZH.pck> --project <dir> --scene seen0414`
+  - **用 `--pck` 直接指定路径 → 绕开 `SceneZH.pck` 命名限制**（不必复制改名）
+  - 直接跑 VM 并打印 TEXT/NAME，可先验证对白文本正确
+  - 它读 `ScenePckDecodeOptions::from_project_dir` → 项目根 `key.toml` 提供 CLANNAD key
+
+---
+
+## 7. 分阶段实施蓝图
+
+### 阶段 0（环境，~1h）
+- 安装 Rust：`winget install Rustlang.Rustup`
+- 在 `E:\7_projects\clannad_mcp\siglus_rs` 跑通 `cargo build -p siglus_scene_vm --bin scene_trace`（先冒烟）
+- 本机 GPU/Win10/11 渲染冒烟测试（`siglus_engine` 对仓库自带 testcase）
+
+### 阶段 1（跑起中文版，~0.5–1天）
+- 复制 `SceneZH.pck` → `Scene.pck`（或补丁 `find_scene_pck_path`）
+- 放 `key.toml`（CLANNAD key）
+- 用 `scene_trace`/`siglus_engine` 跑到标题画面与开头剧情，验证：能进游戏、能翻页、文本正确
+- ⚠️ 风险点：CLANNAD 特殊演出（seen6800 等纯指令、DREAMS）、字体/PSB 资源；若卡住则记录并针对性修 VM
+
+### 阶段 2（状态导出，~0.5–1天）
+- 在宿主层加 `state_json()`：scene/line/对话(dbs当前条目)/选择/阻塞
+- 先把对话文本来源打通（dbs 加载路径 → 当前句）
+
+### 阶段 3（控制注入，~0.5天）
+- `advance/choose/save/load/jump` 通过 host 方法实现并自测
+- 用 `siglus_pump_*` 走通按键/鼠标注入路径
+
+### 阶段 4（MCP Server + 会话变量，~0.5–1天）
+- Python MCP Server（stdio），命名管道/共享内存桥接
+- `get_status/get_dialogue/get_choices/advance/choose/save/load/jump`
+- **会话变量表**（§5.3）：`set/get/list_game_variable`；引擎强制项接 `globals.extra_vars`；坏结局等事件自动统计
+- 本地用一个假 agent / 脚本端到端验证"读一句→选一项→存个档→读档"闭环
+
+### 阶段 5（打磨，可选）
+- 事件推送、flag 查询、多存档槽 UI、headless 模式（隐藏窗口）
+
+---
+
+## 8. 风险与对策
+
+| 风险 | 影响 | 对策 |
+|---|---|---|
+| 中文版特殊资源/演出不被 siglus_rs 支持 | 阶段1卡住 | 先用 `scene_trace` 无窗口定位问题；对照源码补 VM 指令；必要时提 issue/PR 给作者 |
+| `SceneZH.pck` 命名不被识别 | 无法启动 | 复制为 `Scene.pck` 保底 + 给上游补 `SceneZH.pck` 候选 |
+| 字体（中文渲染） | 中文显示异常 | 确认中文版用系统字体还是内嵌；调 wgpu 字体配置 |
+| 渲染(wgpu)在某些环境失败 | 窗口无法出画面 | 先用 `scene_trace` 无头验证逻辑与文本（不依赖渲染）；wgpu 问题单独排查（驱动/特性）；headless 仅作阶段 5 备选 |
+| CLANNAD key 不匹配 | 解密失败 | 本机已在 `KeyList.txt` 验证过该 key 可解 SceneZH.pck ✅ |
+| 对话文本与画面不同步 | 状态暴露不准 | 在 VM 的 dbs 加载点挂钩，文本以 VM 内部状态为准（非 OCR） |
+
+---
+
+## 9. 下一步执行清单（新会话从这开始）
+
+> 决策已定（见 §0）。直接按序执行即可。
+
+### ✅ 已就绪
+- [x] `siglus_rs` 已 clone 至 `E:\7_projects\clannad_mcp\siglus_rs`（commit `577d9c8`）
+- [x] MCP 挂载点已定位（§6.1/6.2）
+- [x] 环境：git 2.51 ✅ / winget ✅ / E 盘 43GB ✅
+
+### ⬜ 待执行（阶段 0 → 阶段 1）
+
+- [x] **安装 Rust** —— 2026-09-04 完成：rustup 1.98.1 GNU 工具链（无 MSVC），装于 `E:\.rustup` / `E:\.cargo`（User 级 RUSTUP_HOME/CARGO_HOME/PATH 已写入；因 static.rust-lang.org 极慢，经 USTC 镜像 `RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static` 安装成功）
+- [x] `cargo build -p siglus_scene_vm --bin scene_trace` 冒烟 —— ✅（dev 8m20s；同时构建了 siglus_engine）
+- [x] 游戏根放 `key.toml`（CLANNAD key，见 §4）
+- [x] `scene_trace --pck <SceneZH.pck> --project <游戏根> --scene seen0414` 验证对白输出 —— ⚠️ 已确认 pck 解密+场景 17 可读；纯 scene_trace 遇 wait 会空转（无帧 tick），对白验证改用自定义无头探针（见下）
+- [x] 复制 `SceneZH.pck` → `Scene.pck`（游戏根内已建 Scene.pck）
+- [x] **跑 `siglus_engine` 窗口版 → 跑到标题画面** —— ✅ 自动按 Enter 驱动后到达 `_system_title`（日志 `engine_click2.err.log`），截图 `capture_click2.png`
+- [x] 验收点：能进游戏 ✅、能翻页 ✅（Enter 推进/换行正常）、文本正确 ✅（探针读 VM 消息窗状态输出简体中文，见 `probe_0414_zh.log`）
+- [x] 代码修复已提交 siglus_rs @ `fb51a19`（见 §11 改动记录）
+
+### 阶段 0/1 实际操作要点（2026-09-04 实测）
+
+1. **运行入口（窗口形态）**：`target\debug\siglus_engine.exe --project-dir E:\SteamLibrary\steamapps\common\CLANNAD`；配合自动化按键脚本 `run_engine_click.ps1`（向窗口发 Enter）。
+2. **无头文本验证（新增 bin）**：`target\debug\clannad_probe.exe --project <游戏根> --scene seen0414 --frames 1500 --click --click-every 40`。设置 `SIGLUS_LANGUAGE=ZH` 得到简体中文列（默认 JP 列）。探针逐帧 tick + 注入 Enter，打印 `scene/line/blocked/name/text/choices`（文本直接读 VM 的 `MwndState.msg_text/name_text`，即阶段 2 状态导出的基础）。
+3. **语言列**：textXX.dbs 第 0 列=日文、第 2 列=简中；脚本经 `SYSTEM.GET_LANGUAGE`（`ctx.globals.system.language_code`，可用环境变量 `SIGLUS_LANGUAGE` 或配置覆盖）选列。
+4. **已知噪音（可接受）**：开局旧式 name-template 链 `[108]/[131]/[158]` 未实现 → 现已 warn-once 跳过（名字窗可能缺定制名字，文本不受影响）；`database.name.missing:DATABASE.21` 为 cgmodetbl 表名缺失，无碍推进。
+
+### 阶段 1 卡点与已修 Bug（重要！）
+
+| 卡点 | 根因 | 修复 |
+|---|---|---|
+| dbs 全部 `lzss: arc_size out of bounds` | CLANNAD ZH dbs 的 arc_size=整包长（含 8B 头），严格解包越界 8B | `siglus_assets::dbs` 改用 `lzss_unpack_lenient`（原版即按 org_size 解码）|
+| scene 起始 `unhandled form command chain [108]` 即 bail | 旧式 name 参数链未实现，且未处理即硬错 | `vm.rs`：warn-once 跳过 + 按 ret_form 向 ctx 栈推默认值（fork PR#5 同方向）|
+| debug 构建 `multiply with overflow` 崩溃（text_render.rs:1890）| 像素混合 `u16` 乘法 255³ 溢出 | 改 u32 运算（语义不变）|
+| scene_trace/纯 run() 空转 | 场景 wait（timewait/翻页等待）需帧 tick 驱动 | 无头用 `run_script_proc + tick_frame`（title_probe/clannad_probe 模式）|
+
+> 说明：`siglus_ss_decompiler`（本仓库自带）可把场景反编译为可读 .ss（如 `stage1_evidence\seen0414.ss`），是排查演出脚本的利器。
+
+### 证据文件（`E:\7_projects\clannad_mcp\stage1_evidence\`）
+- `capture_click2.png`（1.9MB）——窗口版标题画面 `_system_title` 渲染帧
+- `engine_click2.err.log` —— 窗口版全流程日志（scene=_system_title 于 3000 帧）
+- `probe_0414_zh.log` —— 无头 ZH 探针输出（幻想世界 seen6900 → seen0414，朋也名字窗、中文对白逐行）
+- `probe_0414b.log` —— 同场景日文列对照
+- `seen0414.ss` —— seen0414 反编译脚本
+- `scene_list.txt` —— Scene.pck 全部 228 个场景名与索引
+- `capture_title.png`/`capture2.png` —— 早期引导画面帧
+
+> 之后按 §7 阶段 2→5 推进（状态导出 → 控制注入 → MCP Server → 会话变量 → 打磨）。
+
+---
+
+## 11. 阶段 0/1 改动记录（2026-09-04）
+
+### siglus_rs（本地仓库，commit `fb51a19`，基线上游 `577d9c8`）
+| 文件 | 改动 |
+|---|---|
+| `crates/siglus_assets/src/dbs.rs` | DBS LZSS 改用 lenient 解包（CLANNAD ZH arc_size 含头 8B） |
+| `crates/siglus_scene_vm/src/vm.rs` | 未处理 form 链 warn-once 跳过并按 ret_form 推 ctx 默认值（对齐上游 open PR #5 方向：https://github.com/xmoezzz/siglus_rs/pull/5） |
+| `crates/siglus_scene_vm/src/text_render.rs` | 像素 alpha 混合改 u32（修 debug 溢出崩溃） |
+| `crates/siglus_scene_vm/src/bin/clannad_probe.rs`（新增）+ `Cargo.toml` | 无头驱动/对白状态探针 bin |
+
+### 游戏目录（E:\SteamLibrary\steamapps\common\CLANNAD）
+- 新增 `key.toml`（CLANNAD Steam 简中 16B key）
+- 新增 `Scene.pck`（= SceneZH.pck 副本，14.2MB）
+- 未改动任何原版文件；savedata_zh 未写入（测试未存档）
+
+### 本机环境
+- Rust：`E:\.rustup` / `E:\.cargo`（stable-x86_64-pc-windows-gnu 1.98.1），User 环境变量已持久化；crates.io 直连可用，如需可配 rsproxy 镜像
+- 工具二进制：`E:\7_projects\clannad_mcp\siglus_rs\target\debug\{siglus_engine,scene_trace,clannad_probe,siglus_ss_decompiler}.exe`
+- 复现窗口版标题：`powershell -File E:\7_projects\clannad_mcp\run_engine_click.ps1`
+- 复现无头 ZH 对白：`set SIGLUS_LANGUAGE=ZH && target\debug\clannad_probe.exe --project E:\SteamLibrary\steamapps\common\CLANNAD --scene seen0414 --click`
+
+---
+
+## 12. 游玩缺陷修复记录（2026-09-04 round2，commit `e874fe2`）
+
+### 已修复：中文字符 □ / 缺字
+- 根因：GameexeZH.dat 配置字体 `CONFIG.FONT.NAME = "Noto Sans Mono CJK SC Regular"`（官方字体在 dat/NotoSansMonoCJKsc-Regular.otf），但引擎①只扫 font/fonts、②SYSCOM 初始配置惰性 → 实际用 MS ゴシック（缺简体字形）。
+- 修复：font 候选目录加入 `dat/`；`apply_gameexe_runtime_defaults` 在 CommandContext 创建时即用 `syscom::original_config_defaults` 应用 Gameexe 配置（字体/消息速度/音量等）。
+
+### 窗口态实测（本轮二进制，2026-09-04）
+| 场景 | debug 结果 | 备注 |
+|---|---|---|
+| NEW GAME（标题 row410）| 自动翻页 100s+ 无崩溃；无按键时 line 冻结（不会自动推进）| seen6900→seen0414 |
+| CONFIG（row518）| 进入稳定；方向键/Enter/ESC 操作 55s 无崩溃 | 旧二进制的“进入即闪”未复现 |
+| LOAD（row464 → `_system_loadsave`）| 可进入；debug≈4.7fps、release≈11.3fps | 页面本身重；release 仍略卡，待后续优化 |
+| story 场景 | debug≈43fps | |
+
+### 存档目录事实
+- 引擎读写目录 = `<project>/savedata`（大小写不敏感命中原版 `SAVEDATA`，即用户 Steam 原存档 config/global/read.sav）。
+- 原存档槽 .sav 不在 savedata_zh/SAVEDATA 顶层列表中；LOAD 页为空槽时依然慢 → 卡顿来自页面合成本身，非存档枚举。
+
+### 待办（依赖用户复测反馈）
+- 用户确认用新 debug/release 重测 NEW GAME / CONFIG / LOAD；
+- 若仍有闪退：用户跑 `E:\7_projects\clannad_mcp\user_repro_capture.ps1` 复现，回传 `userrun_*.err.log`（含 RUST_BACKTRACE=full）；
+- LOAD 页 11fps 优化留待后续（页面合成热点需 profile）。
+
+---
+
+## 13. round2 追加：CONFIG 页空白问题（commit `955ad53`，仍待收敛）
+- 用户反馈：CONFIG 不再崩溃，但进入后页面全空白（无任何设置项）；游戏内右键菜单同样空白；右键可正常返回。
+- 进展：
+  - 无头探针验证：`_system_config` 场景会停在其主循环 line400（blocked=false）且 stage 表单内**无任何内容对象** → 内容缺失发生在 VM 层，非渲染层；
+  - 已确认并实现此前被跳过的 `GLOBAL.GET_SCENE_NAME/GET_LINE_NO`（131/158）→ 配置场景内不再有 skipped chain，但空内容仍复现（还需更深根因）；
+  - fork(AetherSiglus) 的改动聚焦名字窗布局/存档，非配置 UI，不直接适用。
+- 存档目录事实：引擎用 `<project>/savedata`（命中原版 SAVEDATA，即真实 Steam 存档）。
+- 下一步：等用户复测（含 user_repro_capture.ps1 日志）或提供“是否连面板/边框都没有”等界面细节，再沿 syscom 自定义 UI 机制追（CLANNAD config 为自研 EXCALL UI）。
+
+---
+
+## 14. 阶段1后运行期修复与 MCP 决议（2026-09-04）
+
+### 14.1 本轮（阶段1后）所有提交
+| commit | 内容 |
+|---|---|
+| `fb51a19` | 阶段0/1 基础修复：dbs lenient 解包 / 未处理 form 链跳过+ctx 默认 / text_render u32 溢出 / clannad_probe 工具 |
+| `e874fe2` | 字体：扫描 `dat/`、CommandContext 创建即应用 Gameexe SYSCOM 初始配置（修复中文 口 缺字） |
+| `955ad53` | 实现 `GLOBAL.GET_SCENE_NAME/GET_LINE_NO`（form 131/158，此前被跳、返回空/0） |
+| `6d472e2` | 诊断口：`SG_STAGE_DUMP`/`SG_SPRITE_CNT`（env 门控的内容/提交计数） |
+
+### 14.2 三大用户问题最终判定
+| 用户反馈 | 结论 |
+|---|---|
+| NEW GAME：黑白/口/自动推进/数秒闪退 | **已修**（字体+配置初始化）；实测连跑 100s+ 无崩溃；**无输入时不自动推进**（此前“自动推进”来自连点/Enter 连发脚本）；黑白色=开场幻想世界本身样式 |
+| LOAD 存档页极卡顿 | debug≈4.7fps / **release≈11.3fps**（页面合成重；推荐 release 运行）；**槽位本身也不显示**（属下面 EXCALL 缺口） |
+| CONFIG 页闪退 | **不再闪退**；但**内容空白**（属 EXCALL 缺口） |
+
+### 14.3 关键发现：系统覆盖层(EXCALL)菜单画面不渲染【已知缺口，非 MCP 阻塞】
+- CONFIG / 游戏内右键(CANCEL) / LOAD 槽位 共用 `_system_common` 的 **EXCALL 共享壳**（`form49`+EXCALL 镜像 `form16433`，各 303 对象/33 消息窗），场景经 `suspend_wait_for_syscom_excall` 进入。
+- 实测：壳已建，但每帧**只有 2~3 个可见对象、消息窗文本为空、提交的可见 sprite 极少**（对比标题页稳定 12 个有效 sprite）。灰遮罩/背景正常 → 覆盖层机制在工作，**缺的是子对象图像/文本绑定与提交渲染**。
+- 普通图层（标题/剧情/过场）完全正常 ⇒ 问题定位为**引擎未实现 EXCALL 系统覆盖层内容渲染**；上游 fork(AetherSiglus) 改动不含此部分，无可直接移植实现。
+- 结论：**“元素与功能”层面基本完善**（场景逻辑、syscom 状态、配置值、遮罩均正常），仅画面内容未画（部分菜单文字可能同样未填充，同属此缺口）。
+- **对 MCP：不阻塞**（读=VM 内部状态；写=内部接口，均不依赖画面）。
+
+### 14.4 目标重定向（已更新 goal revision4）
+> 推进 MCP 阶段2+：状态读取接口（scene/line/name/text/choices/save_slots）+ 控制接口（advance/choose/save/load/jump）并验证存读档与选择点数据；为阶段4 MCP Server 铺路。EXCALL 菜单渲染列为独立已知缺口，不纳入。
+
+### 14.5 待办（按序）
+- [ ] 阶段2：状态导出/读接口（基于 clannad_probe 现有读取：scene/line/blocked/name/text/choices，可扩展 save_slots/flags）
+- [ ] 阶段3：控制接口 advance/choose/save/load/jump；无头验证**选择点读取+选择**、**save/load 数据写读**（尚未实测）
+- [ ] 阶段4：MCP Server（stdio）封装
+- [ ] （独立项）EXCALL 覆盖层渲染：需对照 Siglus C++ 实现 `tnm_syscom`/EXCALL 绑定渲染；本会话无视觉模型，视觉闭环可交由后续或用户辅助
+- [ ] （minor）返回标题需两次左键（覆盖层退出后 focus/button-group 复位）
+
+### 14.6 工具/命令速查
+- 抓日志复现：`powershell -ExecutionPolicy Bypass -File E:\7_projects\clannad_mcp\user_repro_capture.ps1`（输出 `userrun_*.err.log`，含 RUST_BACKTRACE=full）
+- 运行引擎：`E:\7_projects\clannad_mcp\siglus_rs\target\debug\siglus_engine.exe --project-dir "E:\SteamLibrary\steamapps\common\CLANNAD"`（release 版性能更好）
+- 无头对白/状态探针：`target\debug\clannad_probe.exe --project <游戏根> --scene seen0414 --click`；`SIGLUS_LANGUAGE=ZH` 取简中列
+- 诊断口：`set SG_STAGE_DUMP=1`（内容/提交计数，需打开对应页面时查看）
+- 证据：`stage1_evidence\`（标题截图/日志/脚本反编译/场景索引）
