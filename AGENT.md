@@ -1,7 +1,7 @@
 # CLANNAD Steam 中文版 —— MCP 实时控制 · 已定稿执行计划
 
 > 目标：让 **AI agent 能实时读取并操作 CLANNAD**——暴露实时游戏状态（场景/行号/对话文本/选项），并提供 SL（存取档）/选择/推进/跳转等操作接口，封装成 **MCP 服务**。
-> 最近更新：2026-09-04 · 状态：**✅ 阶段 0/1 已完成（跑起中文版，验证标题+中文对白），待开始阶段 2**
+> 最近更新：2026-09-04 · 状态：**✅ 阶段 0-3 已完成（跑起中文版 + 状态/控制 + SL 验证），结局检测已定为文本匹配；待阶段 4（MCP Server）**
 > 本文档是后续所有工作的**上下文与计划基准**；新会话请先读本文档。
 
 ---
@@ -281,7 +281,7 @@
 ### 阶段 0/1 实际操作要点（2026-09-04 实测）
 
 1. **运行入口（窗口形态）**：`target\debug\siglus_engine.exe --project-dir E:\SteamLibrary\steamapps\common\CLANNAD`；配合自动化按键脚本 `diagnostics/scripts/run_engine_click.ps1`（向窗口发 Enter）。
-2. **无头文本验证（新增 bin）**：`target\debug\clannad_probe.exe --project <游戏根> --scene seen0414 --frames 1500 --click --click-every 40`。设置 `SIGLUS_LANGUAGE=ZH` 得到简体中文列（默认 JP 列）。探针逐帧 tick + 注入 Enter，打印 `scene/line/blocked/name/text/choices`（文本直接读 VM 的 `MwndState.msg_text/name_text`，即阶段 2 状态导出的基础）。
+2. **无头文本验证（新增 bin）**：`E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_probe.exe --project <游戏根> --scene seen0414 --frames 1500 --click --click-every 40`。设置 `SIGLUS_LANGUAGE=ZH` 得到简体中文列（默认 JP 列）。探针逐帧 tick + 注入 Enter，打印 `scene/line/blocked/name/text/choices`（文本直接读 VM 的 `MwndState.msg_text/name_text`，即阶段 2 状态导出的基础）。
 3. **语言列**：textXX.dbs 第 0 列=日文、第 2 列=简中；脚本经 `SYSTEM.GET_LANGUAGE`（`ctx.globals.system.language_code`，可用环境变量 `SIGLUS_LANGUAGE` 或配置覆盖）选列。
 4. **已知噪音（可接受）**：开局旧式 name-template 链 `[108]/[131]/[158]` 未实现 → 现已 warn-once 跳过（名字窗可能缺定制名字，文本不受影响）；`database.name.missing:DATABASE.21` 为 cgmodetbl 表名缺失，无碍推进。
 
@@ -328,7 +328,7 @@
 - Rust：`E:\.rustup` / `E:\.cargo`（stable-x86_64-pc-windows-gnu 1.98.1），User 环境变量已持久化；crates.io 直连可用，如需可配 rsproxy 镜像
 - 工具二进制：`E:\7_projects\clannad_mcp\siglus_rs\target\debug\{siglus_engine,scene_trace,clannad_probe,siglus_ss_decompiler}.exe`
 - 复现窗口版标题：`powershell -File E:\7_projects\clannad_mcp\diagnostics\scripts\run_engine_click.ps1`
-- 复现无头 ZH 对白：`set SIGLUS_LANGUAGE=ZH && target\debug\clannad_probe.exe --project E:\SteamLibrary\steamapps\common\CLANNAD --scene seen0414 --click`
+- 复现无头 ZH 对白：`set SIGLUS_LANGUAGE=ZH && E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_probe.exe --project E:\SteamLibrary\steamapps\common\CLANNAD --scene seen0414 --click`
 
 ---
 
@@ -405,7 +405,7 @@
 ### 14.6 工具/命令速查
 - 抓日志复现：`powershell -ExecutionPolicy Bypass -File E:\7_projects\clannad_mcp\diagnostics\scripts\user_repro_capture.ps1`（输出 `diagnostics/logs/userrun_*.err.log`，含 RUST_BACKTRACE=full）
 - 运行引擎：`E:\7_projects\clannad_mcp\siglus_rs\target\debug\siglus_engine.exe --project-dir "E:\SteamLibrary\steamapps\common\CLANNAD"`（release 版性能更好）
-- 无头对白/状态探针：`target\debug\clannad_probe.exe --project <游戏根> --scene seen0414 --click`；`SIGLUS_LANGUAGE=ZH` 取简中列
+- 无头对白/状态探针：`E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_probe.exe --project <游戏根> --scene seen0414 --click`；`SIGLUS_LANGUAGE=ZH` 取简中列
 - 诊断口：`set SG_STAGE_DUMP=1`（内容/提交计数，需打开对应页面时查看）
 - 证据：`diagnostics\evidence\`（标题截图/日志/脚本反编译/场景索引）——测试产物统一归档于 `diagnostics\`（logs/screenshots/scripts/evidence），已被 `.gitignore` 忽略，不入库
 
@@ -415,3 +415,133 @@
 - `diagnostics\`：测试截图/日志/脚本/反编译证据（本地，.gitignore 忽略）。
 - 首次克隆本仓库后：`git submodule update --init` 即可拉取 fork 的 siglus_rs。
 - 说明：本地 `siglus_rs` 直接保留了原克隆的 8GB 构建产物（`target/` 已被子仓库自身的 .gitignore 忽略），无需重编、未删除目录；“删除 xmoezzz/siglus_rs” 落实为**移除对上游的引用**（origin 已指向 fork）。
+
+---
+
+## 15. 阶段2/3 进展（2026-09-04，多模态会话，commit `01e602e`）
+
+### 15.1 已交付
+- **`clannad_ctl`**（新增 bin，无头）：状态/控制驱动。每帧输出 JSON：
+  - 读：`get_status`（scene/scene_no/line/blocked）、`get_dialogue`（name/text）、`get_choices`（btnsel 文案）、`save_slots`（数量）。
+  - 写：`advance`（Enter）、`choose`（`ctx.request_sel_point_with_result`）、`save/load`（`syscom::menu_save_slot/menu_load_slot`+`write_global_save`）、`jump`（`restart_scene_name`）。
+- **引擎 `SG_CTL`**（env 门控 + `ctx_state_json` 状态导出）：可在运行中的窗口态引擎按帧调度 `SAVE/LOAD/JUMP/CHOOSE/STATE@FRAME`，打印 JSON。
+- **隔离工程 `clannad_test`**（junction 指向 dat/g00/gan/bgm/mov/wav/koe + Scene.pck/key.toml + 空 savedata）：SL 测试不触碰真实 Steam 存档。
+
+### 15.2 已验证
+- 状态 JSON 读取正确（scene/line/name/text/choices/save_slots）。
+- **advance / choose / save / load / jump** 控制接口均已在引擎接线；验证运行中 **save 已真正写盘**（隔离 savedata 生成 `config.sav/global.sav/read.sav`）。
+- 窗口态：标题页（NEW GAME/LOAD/CONFIG/STAFF/EXIT 英文菜单）与剧情中文文本渲染完全正常（多模态截图确认）；无崩溃。
+
+### 15.3 已知阻塞（下一优先）
+- **无头深推剧情会在 `_cl_forclannad` 下溢**：`PROPERTY elm=[]`（参数链为空）+ `ASSIGN` 对空元素作字符串出栈 → `str stack underflow @ pc=0x13d6 line144`（`clannad_ctl`/无头深走都会触发，窗口态游戏不受影响）。将与 131/158 无关（A/B 已验证）。
+  - 影响：无头模式暂无法顺畅推进到**选择点**与**完整 SL 恢复**的确定性验证；需先修该引擎缺陷（包含调用的参数链/空元素处理）。
+- 修完后即可完成：真实选择点读取+choose 分支；save→jump→load 恢复到原场景的闭环验证。
+
+### 15.4 下一步
+1. 修 `_cl_forclannad` 空参数链 ASSIGN 下溢（含调用参数传递）。
+2. 无头驱动到真实选择点验证 `get_choices` + `choose`。
+3. 无头 `save→jump→load` 恢复到原 scene/line 的闭环断言。
+4. 之后按阶段4 把 `clannad_ctl` 的状态/控制接口封装为 MCP Server（stdio）。
+
+---
+
+## 16. 阶段2/3 收尾结论与 MCP 形态决议（2026-09-04）
+
+### 16.1 已完成
+- `clannad_ctl`（无头状态/控制驱动）+ 引擎 `SG_CTL`/`ctx_state_json` 已提交（`01e602e`）；隔离工程 `clannad_test`（junction + 空 savedata）。
+- 已验证：状态 JSON（scene/line/name/text/choices/save_slots）读取正确；advance/choose/save/load/jump 全部接线；**save 已真实写盘**（config/global/read.sav）。
+- 多模态截图确认：标题页菜单(NEW GAME/LOAD/CONFIG/STAFF/EXIT)与剧情中文文本渲染完全正常，无崩溃。
+
+### 16.2 无头深推的引擎缺口（真实根因，已定位未修复）
+- `_cl_forclannad` 包含调用($mes/$dbs_select 等)在无头深推时：
+  - `ASSIGN` 的 STR 实参未入栈 → `str stack underflow @ pc=0x13d*`；
+  - 继续是 `assign_call_prop_result` 对 include-call 参数 form=20 `sub=[0]` 不支持。
+- 尝试“空串掩码 + call-prop no-op 容错”后，脚本通过多行但**陷入无限循环**（line 144→339 反复），因为 include 的字符串实参并未真正生效 → **已回退这两处容错**（避免掩盖/挂起；窗口态完全不受影响）。
+- 真正修法是**实现 include-call（`cur_call.*` / `CALL.L/K` / `__elm` 参数）的字符串实参传递与 form=20 赋值**，属中等以上引擎工作量。
+
+### 16.3 MCP 形态建议（据此选择）
+- 结论：**MCP 走“窗口态引擎 + 桥”（AGENT.md §6.3 路线 A 窗口形态）最稳**——引擎已可实时读状态（SG_CTL/状态导出）与发控制（advance/choose/save/load/jump）；无头深推只作可选增强。
+- 下一阶段4：把 `clannad_ctl` 的状态/控制逻辑用 **stdio 命名管道/共享内存桥** 对接窗口态引擎（复用现有 host 按键/鼠标注入 + syscom SL），封装成 MCP Server。
+- 若仍需完全无头（便于 CI/测试），则先实现 §16.2 的 include-call 实参传递，再跑真实选择点 + save→jump→load 闭环。
+
+### 16.4 工作区整理（已执行）
+- `E:\7_projects\clannad_mcp` 已建 git 仓库，`siglus_rs` 为子模块。
+- 测试脚本/日志/截图/反编译/证据/隔离工程统一移入 `diagnostics/`（根 `.gitignore` 忽略 `diagnostics/`、`*.log/*.png/*.ss/*.ps1`，不入库）。
+- `AGENT.md` 命令速查中路径已随迁移更新（见下）。
+
+---
+
+## 17. 结局检测方案重定（2026-09-04，多模态会话，commit `df6d7c3`→`5864f84`）
+
+> **背景（重要）**：用户提出 MCP 需要"结局相关接口"。我在探索中发现最初假设（"结局=有 Steam 成就的场景"）**是错的**，并经历多轮否定后，最终把结局检测定为**文本匹配**。本节记录：权威事实、被否定的信号、以及最终实现。
+
+### 17.1 用户提供的权威结局清单（TRUE END）
+```
+共有 11 个 TRUE END：美佐枝Misae、智代Tomoyo、有纪宁Yukine、杏Kyou、椋Ryou、
+胜平Kappei、春原兄妹Mei、琴美Kotomi、风子Fūko、渚Nagisa、幸村Koumura。
+其余还有十几个坏结局。剩余的 steam 成就都不是结局。
+TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就在 ED 播放结束后才解锁）。
+```
+
+### 17.2 被否定/错误的信号（逐个验证过，记下来避免重走）
+| 信号 | 为什么不能用 |
+|---|---|
+| **Steam 成就** | ① 游戏内只有 **16 个字面 `ach_xxx`**（椋/春原梅/渚/幸村无对应成就）；② **engine 里 `ctx.ids.steam_set_achievement` 硬编码为 0**（constants.rs:3071），`steam.rs` 的 `if id != 0` 永远假 → **VM 运行期不记录 set_achievement**，成就不可观测；③ 成就是账户级一次性。 |
+| **`return_to_menu`** | 太宽泛：很多"路线后端/章节结束"场景也调用，非结局专用。 |
+| **`g[123] += 1`（光玉）** | **坏结局也 +1**（seen0666 春原bad end 同样执行），不能区分 TRUE END vs 坏结局。 |
+| **`g[1004..1006]` 终值** | TRUE END 间取值不一（seen9999=1,1,2；seen5430=1,1,0；seen7500=0,0,0），不统一。 |
+| **"播放ED"命令** | 全场景无固定的 `mov.play`(ED) 调用；TRUE END 与坏结局的**命令词汇表基本一致**（唯一差异 `syscom.set`，且坏结局是子集）。 |
+| **以 scene 对白末句定位** | `.ss` 场景的 `$mes(serial)` **不按显示顺序排列**（一个 scene 跨数万行、多分支），按文件位置取"最后几句"必然错。用户用风子线实况（"请和风子交往吧！"）验证了这一点。 |
+
+### 17.3 最终方案：文本匹配判定（用户拍板，判句由用户提供）
+- 原理：MCP / clannad_ctl **每帧读当前对话窗文字**（`current_msg_text`，即 VM 的 `MwndState.msg_text`），与 `endings_map.toml` 的**判定句**做匹配，命中即判定"达成某结局"并上报。
+- 优点：不依赖成就/场景结构；每次显示都触发（非一次性）；判句用户可从实况直接给出。
+- `endings_map.toml` 格式改为：`"判定句" = "结局名"`；`@` 前缀 = 整行精确匹配（默认子串）；实际显示带 `「」『』“”""` 框，比对时 `strip_dialogue_quotes` 先剥框。
+
+### 17.4 判句唯一性验证 + scene 定位（用 `clannad_text --search`）
+工具 `clannad_text`（bin，见 §17.6）加 `--search`/`--search-file` 模式，可在全部 text dbs 里搜判句。11 个 TRUE END 判句**各恰好 1 次命中**（无撞句），且定位到对应角色路线场景：
+
+| 结局 | 判句serial | 定位场景 | 备注 |
+|---|---|---|---|
+| 风子 | 4110290 | seen1518 | 与成就场景一致 |
+| 杏 | 2118230 | seen3514 | 一致 |
+| 胜平 | 11031400 | seen7600 | 一致 |
+| 有纪宁 | 8052830 | seen5430 | 一致 |
+| 智代 | 5089390 | seen2514 | 智代线 |
+| 春原梅 | 7053710 | seen7400 | 春原兄妹 |
+| 幸村 | 9001970 | seen7300 | |
+| 琴美 | 3115100 | seen4800 | 距离60 |
+| 椋 | 2074260 | seen3506 | 距离190 |
+| 渚 | 18149630 | seen6726 | After Story 渚 |
+| 美佐枝 | 10027680 | seen7500 | 距离580 |
+
+（"距离"= 判句serial 与场景 `$mes` 记录范围首尾的差距，都很小。）
+
+### 17.5 已实现文本匹配判定（clannad_ctl，commit `457187c`+`5864f84`）
+- `clannad_ctl` 每帧：读当前文字 → 与 map 判定句匹配（子串/`@`精确）→ 命中上报
+  `{"event":"ending","kind":"text","name":"<结局名>","phrase":"<判定句>","scene","line","frame"}`；`HashSet` 去重（同句停留不重复触发）。
+- 保留 `return_to_menu` 作为**信息性 `route.end` 事件**（非权威结局判定）。
+- 新增 `--test-match <text>` / `--test-match-file <utf8.txt>` 验证模式（配合 `--endings-map`），无需跑完整游戏即可测试判句命中。
+- **实测验证**：
+  - `「请和风子交往吧！」`（带框，子串）→ ✅ `风子 Fuko TRUE END`
+  - `一直都喜欢着…朋也你。`（`@`精确）→ ✅ `杏 Kyou TRUE END`
+  - `普通的学校对话，不会命中。`（负例）→ ✅ 不命中
+
+### 17.6 新工具 `clannad_text`（bin）
+- 读取 `text*.dbs`（UTF-8 UTF16 按需），按游戏 `$mes` 算法还原对白：`db_no = serial/1_000_000`，`row = db.find_num(500, serial)`，`get_str(row, 0)=日文 / get_str(row, 2)=中文`。
+- 模式：`--scene-ss <scene.ss>` 列出该场景全部对白（中日对照）；`--search <substr>`/`--search-file <utf8.txt>` 在全部 dbs 里搜判句；`--probe` 打印各 dbs 行列类型。
+- 起因：headless 深推被 `_cl_forclannad` 缺口卡住（§16.2），无法跑到对白，故直接读 dbs。
+- ⚠️ 中文判句/参数请走 **`--search-file <utf8.txt>`**（Rust 按 UTF-8 读文件），避免 PowerShell 命令行列中文被 GBK 风马牛。
+
+### 17.7 关键教训（务必牢记）
+- `.ss` 场景**不含剧情对白**（只有 `$mes(serial)` 引用），对白在 `text*.dbs`，`$mes` 序列**非按显示顺序** → 静态按文件位置取"末句/首句"不可靠。
+- 用户对游戏（实况/真相）的判断**优先**于一切静态推断；本会话多次因我静态猜 scene/信号而被用户用实况纠正。
+- 引擎 `steam_set_achievement` id=0 → 成就运行时不可观测，是硬事实（constants.rs:3071 + steam.rs:22）。
+- 文本匹配是当前唯一被验证可行、用户认可的结局判定方式。
+
+### 17.8 下一步
+- [ ] **阶段4 MCP Server（stdio）**：封装 `clannad_ctl` 状态/控制 + 文本匹配结局。这是主线目标。
+- [ ] （可选增强）窗口态引擎跑真实对白验证文本判定在真实对话下触发。
+- [ ] （独立项）`_cl_forclannad` include-call 实参缺口（§16.2）若修好，可让 headless 顺畅走到选择点/SL，但非 MCP 阻塞。
+
+> 说明：`endings_map.toml`（诊断工程内）由用户填了 11 个 TRUE END 判定句，已用 `clannad_text --search` 验证唯一性并定位场景。文本判定逻辑已提交并通过 `--test-match` 实测。
