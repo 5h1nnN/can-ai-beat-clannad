@@ -751,5 +751,14 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
   - 正常引导到 seen0414:697（`choices=["录点东西进去覆盖掉","还是算了"]`）。
   - `CHOOSE:0` → 分支「好，把我的原创说唱录进去好了。」（= 第 1 项"录点东西进去覆盖掉"）
   - `CHOOSE:1` → **同样**「好，把我的原创说唱录进去好了。」（= 第 1 项！）← **bug 复现**
-- **结论**：open-anim 接受门槛（`choose_selbtn` 已修）只是其一；**真实根因是正常引导后脚本把选择结果恒当作 0**（= AGENT §19.8 记的 `_cl_forclannad` include-call 返回 `246`/`-1` 垃圾值、未正确应用）。这与 §16.2 的 include-call 缺口一致：`--scene` 直启因全局量未设走了"碰巧正确"的默认分支，掩盖了它。
-- **待修**：实现 §16.2 的 include-call（`cur_call.*`/`CALL.L/K`/`__elm`）字符串实参传递与 form=20 赋值，或定位正常引导下 `_cl_forclannad` 选择分发为何恒走第 0 项。这是主线，尚未定位到具体代码路径（本会话仅复现+定性到"正常引导 vs --scene 直启"差异）。
+- **结论**：open-anim 接受门槛（`choose_selbtn` 已修）只是其一；**真实根因是正常引导后脚本把选择结果恒当作 0**（= AGENT §19.8 记的"deliver result=1 但脚本进第一项"）。`--scene` 直启因全局量未设走了"碰巧正确"的默认分支，掩盖了它。
+
+### ✅ 最终修复（窗口正常引导实测通过，commit `b31534b`）
+- **根因**：`finish_selbtn()` 通过 **decide/close 动画**（按墙钟）交付选择索引；正常引导下脚本在动画完成**之前**就恢复并读取命令返回值 → 读到默认 **0** → 恒走第 1 项。
+- **修复**（`runtime/mod.rs` `choose_selbtn`，MCP/桥接/skip-retrigger 程序化路径）：除强制出场动画结束外，若 `deliver_selbtn_result()` 尚未触发，则**同步交付**（压 `ctx.stack` + `notify_wait_key`，视同引擎交付路径）。手动鼠标点击仍走动画路径。
+- **窗口正常引导实测**（`--auto-start`，修复后）：
+  - `CHOOSE:0` → seen0414:704「好，把我的原创说唱录进去好了。」= 第 1 项"录点东西进去覆盖掉"
+  - `CHOOSE:1` → seen0414:798「虽然之前把我单独留在房间里的时候…」= 第 2 项"还是算了"
+  - **两分支明显不同且与选项正确对应** → `choose(i)` 真正进入第 i 项分支。
+- 日志：`diagnostics/logs/win_fix0.log` / `win_fix1.log`。对比可复制 `win_norm{0,1}.log`（修复前两选皆第 1 项）。
+- 诊断工具（保留，gitignore）：`diagnostics/scripts/drive_sig_engine_choose.ps1`（--auto-start 正常引导 → SKIP 到选择点 → CHOOSE → 记录分支对白 + `selbtn` 状态）。`SG_SELTRACE`（vm.rs 诊断，env-gated）、状态 JSON 的 `selbtn.{result,result_delivered,...}` 便于观测。
