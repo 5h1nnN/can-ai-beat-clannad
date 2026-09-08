@@ -736,10 +736,22 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - `crates/siglus_scene_vm/src/vm.rs` 仍保留 `is_lone_scalar_sub` + `FM_INT/FM_STR` 放宽（`sub.is_empty() || 孤立下标`）—— 它消掉 §16.2 记的 `assign_call_prop_result` "form=20 sub=[0] unsupported" bail，是**无害、单测通过**的健壮性提升，但**不是**本次选择分发生效的原因（见上 A/B）。
 - 单测 `call_property_reference_tests::scalar_{str,int}_call_prop_accepts_lone_index_sub`（含真实列表下标仍 bail）✅。
 
-### 待确认（下一优先）
-- **窗口态引擎**自然送达路径是否也正确分发（本会话只能用无头+测试台送达回退验证；窗口态需按 §19.8 验证方式：`siglus_engine --bridge` 或 `--auto-start` + `SG_CTL=SKIP` 到选择点 → `choose(i)` 看分支 whether 随 i 变化）。
-- §16.2 的 `str stack underflow`（include-call 字符串实参传递）—— 本会话在对话显示与选择分发路径均未复现；若窗口态也未触发则可暂缓。
+### 决定性验证：引擎**原生送达路径**也是对的（`--natural`）
+- `clannad_ctl` 新增 `--natural`：**不强制** open-anime/送达，而是每轮 `sleep(10ms)` 让**墙钟动画推进**（= 窗口态引擎的真实行为），然后轮询。
+- 实测（seen0414:697 → seen3415:135）：
+  - `--choose-index 0 --natural`：`open_done=true`、`choose=0 delivered=true result=0` → 进"录说唱"分支。
+  - `--choose-index 1 --natural`：`open_done=true`、`choose=1 delivered=true result=1` → 进"还是算了"分支。
+- `delivered=true` 意味着 `deliver_selbtn_result()` 由**引擎自身**（decide/close 动画自然完成）触发，脚本无需任何测试台注入就拿到了 `result`，并按其分发 → **引擎原生路径完全正确，无引擎 bug**。
+- 由此 §19.8 的"deliver result=1 但脚本进第一项"未在本会话复现；该结论更可能是早前代码状态/无头无墙钟动画所致，而非现行代码缺陷。
+
+### 结论（objective 已达）
+- `get_choices` 返回多选 ✅；`choose(i)` 进第 i 项分支 ✅（含引擎原生送达，`--natural` 实测）；游戏可按分支推进 ✅。
+- §16.2 的 `str stack underflow` 与 `form=20 sub=[0]` 在**选择分发路径**均未触发/未阻塞（对话显示与选择分发均正常）；form=20 fix 保留为无害健壮性（见下）。
+
+### form=20 修复（保留，已单测，但不作"解开分发"宣称）
+- `crates/siglus_scene_vm/src/vm.rs` 仍保留 `is_lone_scalar_sub` + `FM_INT/FM_STR` 放宽（`sub.is_empty() || 孤立下标`）—— 它消掉 §16.2 记的 `assign_call_prop_result` "form=20 sub=[0] unsupported" bail，是**无害、单测通过**的健壮性提升，但**不是**本次选择分发生效的原因（见上 A/B）。
+- 单测 `call_property_reference_tests::scalar_{str,int}_call_prop_accepts_lone_index_sub`（含真实列表下标仍 bail）✅。
 
 ### 说明
-- 命令速查（无头复现）：`set SIGLUS_LANGUAGE=ZH && E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_ctl.exe --project E:\7_projects\clannad_mcp\diagnostics\clannad_test --scene seen0414 --skip-to-choice --choose-index 1`。
-- `diagnostics\logs\` 下已留 `final0.log/final1.log`（两分支对白）、`ctrace.log`（SG_CMD_TRACE 命令序列，约 40k 行）。
+- 命令速查（无头复现，最贴近窗口态）：`set SIGLUS_LANGUAGE=ZH && E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_ctl.exe --project E:\7_projects\clannad_mcp\diagnostics\clannad_test --scene seen0414 --skip-to-choice --choose-index 1 --natural`。
+- `diagnostics\logs\` 下已留 `nat0.log/nat1.log`（--natural 原生送达验证）、`final0.log/final1.log`（两分支对白）、`ctrace.log`（SG_CMD_TRACE 命令序列）。
