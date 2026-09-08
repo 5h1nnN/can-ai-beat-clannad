@@ -744,3 +744,11 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 ### 说明
 - 复现/验证命令（无头）：`set SIGLUS_LANGUAGE=ZH && E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_ctl.exe --project E:\7_projects\clannad_mcp\diagnostics\clannad_test --scene seen0414 --skip-to-choice --choose-index 1 --raw-choose`（复刻引擎时序，修复前 result=0/open_t=7，修复后 result=1/open_t=0）；`--natural` 验证"接受+送达+正确分支"全链。
 - `diagnostics\logs\` 下已留 `raw0/raw1.log`（修复前后 raw 对比见 `raw1b.log`）、`nat0b/nat1b.log`（修复后 natural 验证）、`final0/final1.log`（两分支对白）。
+
+### 决定性：窗口引擎实测（本次驱动，修复后）
+- 用 `siglus_engine --scene-name seen0414 --bridge`（TCP）驱动到真实选择点 seen0414:697（`choices=["录点东西进去覆盖掉","还是算了"]`），再 `CHOOSE:0/1` 并逐条读对白：
+  - `CHOOSE:0` → 分支对白「好，把我的原创说唱录进去好了。」「主题是『我献给好友春原的说唱』。」…（= 第 1 项"录点东西进去覆盖掉"）
+  - `CHOOSE:1` → 分支对白「虽然之前把我单独留在房间里的时候…不过今天就算了吧。」「我决定在春原回来之前闪人。」…（= 第 2 项"还是算了"）
+  - **两分支明显不同且与选项正确对应** → 修复后窗口引擎 `choose(i)` 进第 i 项分支。
+- 驱动脚本：`diagnostics/scripts/drive_sig_engine_choose.ps1`（启动引擎→SKIP 到选择点→CHOOSE→逐条记录分支对白）。结果见 `diagnostics/logs/win_choose0c.log` / `win_choose1c.log`。
+- **用户注意**：此验证用的是**修复后重建的 `siglus_rs\target\debug\siglus_engine.exe`**（及仓库 release 版）。若您之前测的窗口仍"只选第一"，请确认运行的是**最新重建**的二进制（`--choose-index` 修复在 `runtime/mod.rs` `choose_selbtn`，commit `0411de7`），而非旧构建。
