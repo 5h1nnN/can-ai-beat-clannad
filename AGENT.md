@@ -712,46 +712,35 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 
 ---
 
-## 19.9 推进 `_cl_forclannad` 选择分发（本会话 2026-09-08，commit 待定）
+## 19.9 选择分发根因与修复（本会话 2026-09-08，commit 待定）
 
 ### 新增：可复现的选择点驱动工具（`clannad_ctl`）
 给 `clannad_ctl` 加了**快速无头 skip+choose** 模式（复用引擎 skip 的 reveal-now+Enter+burst），能秒级跑到真实 CLANNAD 选择点并选指定项：
-- `clannad_ctl --project <proj> --scene seen0414 --skip-to-choice` → 快进到下一个真实选项（`globals.selbtn`），打印 `choice.appeared`（含 `choices`/`cursor`）。
-- 加 `--choose-index N` → 选中第 N 项（`ctx.choose_selbtn`），快进到**下一个选择点**，打印 `choose.next_choice` 及中间整段对白 `lines`。
-- 实测：seen0414:697 返回 2 个真实选项 `["录点东西进去覆盖掉","还是算了"]`（此前 `--find-choice` 不触发，因为它读的是 `btnselitem_lists` 而非 `selbtn.choices`）。
+- `--skip-to-choice` → 快进到下一个真实选项（`globals.selbtn`），打印 `choice.appeared`（含 `choices`/`cursor`）；`--scene seen0414` 时在 seen0414:697 命中 `["录点东西进去覆盖掉","还是算了"]`。
+- `--choose-index N` → 选中第 N 项（`ctx.choose_selbtn`），继续快进到**下一个选择点**，打印 `choose.next_choice` 及中间整段对白。
+- `--natural` → 不强制动画，`sleep(10ms)` 让墙钟动画推进后轮询（= 窗口态真实行为）；`--raw-choose` → **立即** `choose_selbtn`（不等待，复刻引擎桥接 CHOOSE 的真实时序）。
 
-### 关键发现：选择分发**本身是正确的**（只要结果送达）
-- **`get_choices`** 返回多选 ✅；**`choose(i)` 进入第 i 项分支** ✅：
-  - `--choose-index 0` → 分支开始对白「好，把我的原创说唱录进去好了。」（= 第 1 项"录点东西进去覆盖掉"）
-  - `--choose-index 1` → 分支开始对白「虽然之前把我单独留在房间里的时候…不过今天就算了吧。」（= 第 2 项"还是算了"）
-  - 两分支开头**明显不同**，后续在 seen3415:135 汇合（之后是同一段坡道对话）—— 即选择结果被正确应用，游戏可正常按分支推进。
-- **结论修正**：会话早前的判断（form=20 fix 解开分发）**不成立**。A/B 测试（临时去掉 form=20 fix）显示分发仍正确 —— 即 **form=20 修复对分发不是决定因素**，决定因素是**选择结果能否送达脚本**。
+### 决定性根因：窗口游戏"永远选第一个" = SelBtn open 动画阻塞 `choose_selbtn`
+- 用户实测：**窗口游戏仍只会选第一个选项**（与 §19.8 一致）。headless 的 `--natural`（先等 open-anim 结束再选）看似正确，**但没有复现窗口的真实时序**。
+- 用 `--raw-choose`（**立即** `choose_selbtn`，不等 open-anim）复现到根因：
+  - 修复前，`choose-index 1` → `[raw] choose=1 result=0 delivered=false started=true open_t=7` —— **`selbtn_accepts_input()` 因 `open_anime_type=7`（open-anim 未结束）拒绝**，`finish_selbtn()` 提前返回，`selbtn.result` 保持 0 → 脚本恒走 0 号（第一条）分支。
+  - 引擎桥接 `BridgeCmd::Choose`/`SG_CTL CHOOSE` 正是在选择刚出现、open-anim 仍在播放时调用 `choose_selbtn`，故必中此问题（与"手动点也一样"同理：手动点击若落在动画期也会被拒）。
+- **结论**：§19.8 的"deliver result=1 但脚本进第一项"中的 deliver=1 只发生在 open-anim 已结束的窗口态；而实际 MCP/桥接在动画期调用 → 被拒 → result 恒 0。根因不在 `_cl_forclannad` include-call，而在 **selbtn 的输入接受门槛**。
 
-### 无头送达限制（本次实测定性）
-- headless 下 `choose_selbtn` 默认可被 `selbtn_accepts_input` 拒绝（`open_anime_type!=0`），且 `deliver_selbtn_result` 由 **decide/close 动画**驱动，而动画按**墙钟**推进，快速 CPU 突发里不完成 → `result_delivered=false`，脚本拿不到结果 → 只能走默认分支。
-- `clannad_ctl` 的 `--skip-to-choice` 做了两处**测试台**回退：① 强制把 open-anime 拉满（`open_anime_cur_time=open_anime_time`、`decide/close_t=0`）让 choose 被接受；② 若 `!result_delivered`，按 `deliver_selbtn_result` 的语义把结果压回 `ctx.stack` 并 `notify_wait_key()`。之后脚本即按结果分发（上述 A/B 已证）。
-- 这**仅是无头测试台的回退**，不掩盖引擎本身的动画/送达路径；窗口态引擎（真实墙钟）由动画自然送达，不受此限。
+### 修复（`crates/siglus_scene_vm/src/runtime/mod.rs` `choose_selbtn`）
+- `choose_selbtn` 是**程序化选择**（MCP 桥接 / skip retrigger），不应被视觉 open/decide/close 动画（按墙钟推进）阻塞。修复：调用 `finish_selbtn` 前强制把 `open_anime_cur_time=open_anime_time`、`open/decide/close_anime_type=0`、`decide_anime_cur_time=0`（等价于动画已播完），使 `selbtn_accepts_input()` 通过。
+- 手动鼠标路径仍走 `finish_selbtn` 且受原动画门槛约束，不受影响。
 
-### form=20 修复（保留，已单测，但不作"解开分发"宣称）
-- `crates/siglus_scene_vm/src/vm.rs` 仍保留 `is_lone_scalar_sub` + `FM_INT/FM_STR` 放宽（`sub.is_empty() || 孤立下标`）—— 它消掉 §16.2 记的 `assign_call_prop_result` "form=20 sub=[0] unsupported" bail，是**无害、单测通过**的健壮性提升，但**不是**本次选择分发生效的原因（见上 A/B）。
-- 单测 `call_property_reference_tests::scalar_{str,int}_call_prop_accepts_lone_index_sub`（含真实列表下标仍 bail）✅。
+### 验证（修复后）
+- `--raw-choose index 1`：`[raw] choose=1 result=1 delivered=false started=false open_t=0` —— **被接受**（open_t=0、result=1）；无头下 delivered=false 仅因 decide/close 动画不 tick（测试台可另加送达回退）。
+- `--natural index 1`：`open_done=true`、`choose=1 delivered=true result=1` → 进「还是算了」分支（对白"虽然之前把我单独留在房间里的时候…"）。
+- `--natural index 0`：`choose=0 delivered=true result=0` → 进「录说唱」分支（对白"好，把我的原创说唱录进去好了。"）。
+- 两分支在 seen3415:135 汇合。`siglus_engine` 已随修复重编。
+- 单测 `call_property_reference_tests::scalar_{str,int}_call_prop_accepts_lone_index_sub`（form=20 修复的，见下）仍 2 passed。
 
-### 决定性验证：引擎**原生送达路径**也是对的（`--natural`）
-- `clannad_ctl` 新增 `--natural`：**不强制** open-anime/送达，而是每轮 `sleep(10ms)` 让**墙钟动画推进**（= 窗口态引擎的真实行为），然后轮询。
-- 实测（seen0414:697 → seen3415:135）：
-  - `--choose-index 0 --natural`：`open_done=true`、`choose=0 delivered=true result=0` → 进"录说唱"分支。
-  - `--choose-index 1 --natural`：`open_done=true`、`choose=1 delivered=true result=1` → 进"还是算了"分支。
-- `delivered=true` 意味着 `deliver_selbtn_result()` 由**引擎自身**（decide/close 动画自然完成）触发，脚本无需任何测试台注入就拿到了 `result`，并按其分发 → **引擎原生路径完全正确，无引擎 bug**。
-- 由此 §19.8 的"deliver result=1 但脚本进第一项"未在本会话复现；该结论更可能是早前代码状态/无头无墙钟动画所致，而非现行代码缺陷。
-
-### 结论（objective 已达）
-- `get_choices` 返回多选 ✅；`choose(i)` 进第 i 项分支 ✅（含引擎原生送达，`--natural` 实测）；游戏可按分支推进 ✅。
-- §16.2 的 `str stack underflow` 与 `form=20 sub=[0]` 在**选择分发路径**均未触发/未阻塞（对话显示与选择分发均正常）；form=20 fix 保留为无害健壮性（见下）。
-
-### form=20 修复（保留，已单测，但不作"解开分发"宣称）
-- `crates/siglus_scene_vm/src/vm.rs` 仍保留 `is_lone_scalar_sub` + `FM_INT/FM_STR` 放宽（`sub.is_empty() || 孤立下标`）—— 它消掉 §16.2 记的 `assign_call_prop_result` "form=20 sub=[0] unsupported" bail，是**无害、单测通过**的健壮性提升，但**不是**本次选择分发生效的原因（见上 A/B）。
-- 单测 `call_property_reference_tests::scalar_{str,int}_call_prop_accepts_lone_index_sub`（含真实列表下标仍 bail）✅。
+### 关于 form=20 修复（`crates/siglus_scene_vm/src/vm.rs`，保留）
+- `is_lone_scalar_sub` + `FM_INT/FM_STR` 放宽（`sub.is_empty() || 孤立下标`）消掉 §16.2 记的 `assign_call_prop_result` "form=20 sub=[0] unsupported" bail。A/B 测试证明它**不是**本次分发失效的原因；作为无害健壮性保留、已单测通过。
 
 ### 说明
-- 命令速查（无头复现，最贴近窗口态）：`set SIGLUS_LANGUAGE=ZH && E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_ctl.exe --project E:\7_projects\clannad_mcp\diagnostics\clannad_test --scene seen0414 --skip-to-choice --choose-index 1 --natural`。
-- `diagnostics\logs\` 下已留 `nat0.log/nat1.log`（--natural 原生送达验证）、`final0.log/final1.log`（两分支对白）、`ctrace.log`（SG_CMD_TRACE 命令序列）。
+- 复现/验证命令（无头）：`set SIGLUS_LANGUAGE=ZH && E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_ctl.exe --project E:\7_projects\clannad_mcp\diagnostics\clannad_test --scene seen0414 --skip-to-choice --choose-index 1 --raw-choose`（复刻引擎时序，修复前 result=0/open_t=7，修复后 result=1/open_t=0）；`--natural` 验证"接受+送达+正确分支"全链。
+- `diagnostics\logs\` 下已留 `raw0/raw1.log`（修复前后 raw 对比见 `raw1b.log`）、`nat0b/nat1b.log`（修复后 natural 验证）、`final0/final1.log`（两分支对白）。
