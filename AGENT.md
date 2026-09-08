@@ -709,3 +709,30 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - 已提交：`siglus_rs@a3eb708`（引擎/桥/control+state 修复）；`mcp_server` 已落库（16a996e 等）。
 - 未提交：本根仓库 submodule 指针（待 `git add siglus_rs` 提交 `AGENT.md` 与指针）。
 - **可玩性阻塞**：`_cl_forclannad` 缺口 → `choose` 不可用 → 分支无法按选择进入。修复它是主线，已定位未实现。
+
+---
+
+## 19.9 推进 `_cl_forclannad` include-call 修复（本会话 2026-09-08）
+
+### 定位（与 §16.2/§19.8 一致）
+- CLANNAD `$mes_sel` 选择结果经 `_cl_forclannad` 场景的 include-call 分发（读 `cur_call.l[0]`/CALL_PROP 选分支）。
+- 分发时，include-call 的**标量 CALL_PROP 赋值**会以 **`form=20`（FM_STR）/ `form=10`（FM_INT）带一个孤立尾部下标 `sub=[0]`** 的形式出现 → `assign_call_prop_result` 只处理 `sub` 为空，落进 `_ => bail!("unsupported call prop assign form=20 sub=[0]")` → include-call 中止 → 分支分发结果（`246`/`-1`）不生效 → **所有选项都走默认/第一条分支**。
+
+### 修复（`crates/siglus_scene_vm/src/vm.rs`）
+- 新增 `SceneVm::is_lone_scalar_sub(sub)`：`sub.len()==1 && sub[0] >= 0`（单元素、非负、非 `ELM_ARRAY` 下标链）。
+- `assign_call_prop_result` 的 `FM_INT`/`FM_STR` 分支条件放宽为 `sub.is_empty() || Self::is_lone_scalar_sub(sub)`：对**标量** CALL_PROP 的孤立下标，按整值写入（原引擎即写整值；把它当真实槽位下标会让标量自身存储悬空）。真正的列表下标（`[ELM_ARRAY, idx]`）仍走原有分支/上报，不回退。
+- **说明**：只消掉"form=20 sub=[0] unsupported"这一个 bail，让 include-call 能完成标量赋值。§16.2 里另一个 `str stack underflow`（字符串实参未入栈）属独立的 include-call 字符串实参传递问题，本改动不掩盖也不覆盖它 —— 需单独立项（本会话调查：窗口态游玩、对话显示均正常，未复现该 underflow）。
+
+### 验证
+- 新增单元测试 `call_property_reference_tests::scalar_{str,int}_call_prop_accepts_lone_index_sub`：
+  - FM_STR + `sub=[0]` + `Value::Str` → 整值写入 ✅
+  - FM_INT + `sub=[0]` + `Value::Int` → 整值写入 ✅
+  - FM_STR + `sub=[ELM_ARRAY,0]`（真实列表下标）→ 仍 bail ✅
+  - `cargo test -p siglus_scene_vm --lib call_prop_accepts_lone_index_sub` → **2 passed**。
+- `cargo build -p siglus_scene_vm --bin clannad_ctl` ✅；`--bin siglus_engine` ✅（均"Finished"，无 error；stderr 的 `[exit code:1]` 是 PowerShell `Select-Object` 管道假象）。
+- **端到端（选择点 choose(i) 进第 i 项分支）尚未在本会话跑通**：headless 驱动从 seen0414 到选择点极慢（intro→line248 已到 frame≈6060，仍未见选项），且受 §19.8"choose 结果经 `_cl_forclannad` 分发"限制；该闭环需按 §19.8 用**窗口态引擎 + `skip`/MCP** 验证（`SG_CTL=SKIP:..@<frame>` 到选择点 → `choose(i)` → 观察分支 scene/line 是否随 i 变化）。
+
+### 下一步
+1. 用窗口态引擎（或给 clannad_ctl 加 skip+`choose_selbtn(i)`）跑到真实选择点，验证 `choose(0)` 与 `choose(1)` 进入不同分支。
+2. 独立跟踪 §16.2 的 `str stack underflow`（include-call 字符串实参传递）—— 若它也在选择点触发，将一并处理；当前未在对话显示路径复现。
+3. 提交 `siglus_rs` 改动 + 更新本根仓库 submodule 指针与 `AGENT.md`。
