@@ -745,10 +745,11 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - 复现/验证命令（无头）：`set SIGLUS_LANGUAGE=ZH && E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_ctl.exe --project E:\7_projects\clannad_mcp\diagnostics\clannad_test --scene seen0414 --skip-to-choice --choose-index 1 --raw-choose`（复刻引擎时序，修复前 result=0/open_t=7，修复后 result=1/open_t=0）；`--natural` 验证"接受+送达+正确分支"全链。
 - `diagnostics\logs\` 下已留 `raw0/raw1.log`（修复前后 raw 对比见 `raw1b.log`）、`nat0b/nat1b.log`（修复后 natural 验证）、`final0/final1.log`（两分支对白）。
 
-### 决定性：窗口引擎实测（本次驱动，修复后）
-- 用 `siglus_engine --scene-name seen0414 --bridge`（TCP）驱动到真实选择点 seen0414:697（`choices=["录点东西进去覆盖掉","还是算了"]`），再 `CHOOSE:0/1` 并逐条读对白：
-  - `CHOOSE:0` → 分支对白「好，把我的原创说唱录进去好了。」「主题是『我献给好友春原的说唱』。」…（= 第 1 项"录点东西进去覆盖掉"）
-  - `CHOOSE:1` → 分支对白「虽然之前把我单独留在房间里的时候…不过今天就算了吧。」「我决定在春原回来之前闪人。」…（= 第 2 项"还是算了"）
-  - **两分支明显不同且与选项正确对应** → 修复后窗口引擎 `choose(i)` 进第 i 项分支。
-- 驱动脚本：`diagnostics/scripts/drive_sig_engine_choose.ps1`（启动引擎→SKIP 到选择点→CHOOSE→逐条记录分支对白）。结果见 `diagnostics/logs/win_choose0c.log` / `win_choose1c.log`。
-- **用户注意**：此验证用的是**修复后重建的 `siglus_rs\target\debug\siglus_engine.exe`**（及仓库 release 版）。若您之前测的窗口仍"只选第一"，请确认运行的是**最新重建**的二进制（`--choose-index` 修复在 `runtime/mod.rs` `choose_selbtn`，commit `0411de7`），而非旧构建。
+### 决定性：窗口引擎实测 → 关键修正（用正常引导，而非 --scene 直启）
+- **重要**：早前用 `--scene-name seen0414 --bridge` 直启做的验证**是误导**——它跳过标题/New Game 引导，某些全局量未初始化，导致选择分发"看起来正确"（CHOOSE:1 → 第 2 项）。**用户实测（手动+ MCP）仍在真实游戏流程只选第一个**。
+- **用 `--auto-start`（真实标题→New Game→剧情引导）复现**（`diagnostics/scripts/drive_sig_engine_choose.ps1`，结果 `diagnostics/logs/win_norm0.log`、`win_norm1.log`）：
+  - 正常引导到 seen0414:697（`choices=["录点东西进去覆盖掉","还是算了"]`）。
+  - `CHOOSE:0` → 分支「好，把我的原创说唱录进去好了。」（= 第 1 项"录点东西进去覆盖掉"）
+  - `CHOOSE:1` → **同样**「好，把我的原创说唱录进去好了。」（= 第 1 项！）← **bug 复现**
+- **结论**：open-anim 接受门槛（`choose_selbtn` 已修）只是其一；**真实根因是正常引导后脚本把选择结果恒当作 0**（= AGENT §19.8 记的 `_cl_forclannad` include-call 返回 `246`/`-1` 垃圾值、未正确应用）。这与 §16.2 的 include-call 缺口一致：`--scene` 直启因全局量未设走了"碰巧正确"的默认分支，掩盖了它。
+- **待修**：实现 §16.2 的 include-call（`cur_call.*`/`CALL.L/K`/`__elm`）字符串实参传递与 form=20 赋值，或定位正常引导下 `_cl_forclannad` 选择分发为何恒走第 0 项。这是主线，尚未定位到具体代码路径（本会话仅复现+定性到"正常引导 vs --scene 直启"差异）。
