@@ -712,27 +712,34 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 
 ---
 
-## 19.9 推进 `_cl_forclannad` include-call 修复（本会话 2026-09-08）
+## 19.9 推进 `_cl_forclannad` 选择分发（本会话 2026-09-08，commit 待定）
 
-### 定位（与 §16.2/§19.8 一致）
-- CLANNAD `$mes_sel` 选择结果经 `_cl_forclannad` 场景的 include-call 分发（读 `cur_call.l[0]`/CALL_PROP 选分支）。
-- 分发时，include-call 的**标量 CALL_PROP 赋值**会以 **`form=20`（FM_STR）/ `form=10`（FM_INT）带一个孤立尾部下标 `sub=[0]`** 的形式出现 → `assign_call_prop_result` 只处理 `sub` 为空，落进 `_ => bail!("unsupported call prop assign form=20 sub=[0]")` → include-call 中止 → 分支分发结果（`246`/`-1`）不生效 → **所有选项都走默认/第一条分支**。
+### 新增：可复现的选择点驱动工具（`clannad_ctl`）
+给 `clannad_ctl` 加了**快速无头 skip+choose** 模式（复用引擎 skip 的 reveal-now+Enter+burst），能秒级跑到真实 CLANNAD 选择点并选指定项：
+- `clannad_ctl --project <proj> --scene seen0414 --skip-to-choice` → 快进到下一个真实选项（`globals.selbtn`），打印 `choice.appeared`（含 `choices`/`cursor`）。
+- 加 `--choose-index N` → 选中第 N 项（`ctx.choose_selbtn`），快进到**下一个选择点**，打印 `choose.next_choice` 及中间整段对白 `lines`。
+- 实测：seen0414:697 返回 2 个真实选项 `["录点东西进去覆盖掉","还是算了"]`（此前 `--find-choice` 不触发，因为它读的是 `btnselitem_lists` 而非 `selbtn.choices`）。
 
-### 修复（`crates/siglus_scene_vm/src/vm.rs`）
-- 新增 `SceneVm::is_lone_scalar_sub(sub)`：`sub.len()==1 && sub[0] >= 0`（单元素、非负、非 `ELM_ARRAY` 下标链）。
-- `assign_call_prop_result` 的 `FM_INT`/`FM_STR` 分支条件放宽为 `sub.is_empty() || Self::is_lone_scalar_sub(sub)`：对**标量** CALL_PROP 的孤立下标，按整值写入（原引擎即写整值；把它当真实槽位下标会让标量自身存储悬空）。真正的列表下标（`[ELM_ARRAY, idx]`）仍走原有分支/上报，不回退。
-- **说明**：只消掉"form=20 sub=[0] unsupported"这一个 bail，让 include-call 能完成标量赋值。§16.2 里另一个 `str stack underflow`（字符串实参未入栈）属独立的 include-call 字符串实参传递问题，本改动不掩盖也不覆盖它 —— 需单独立项（本会话调查：窗口态游玩、对话显示均正常，未复现该 underflow）。
+### 关键发现：选择分发**本身是正确的**（只要结果送达）
+- **`get_choices`** 返回多选 ✅；**`choose(i)` 进入第 i 项分支** ✅：
+  - `--choose-index 0` → 分支开始对白「好，把我的原创说唱录进去好了。」（= 第 1 项"录点东西进去覆盖掉"）
+  - `--choose-index 1` → 分支开始对白「虽然之前把我单独留在房间里的时候…不过今天就算了吧。」（= 第 2 项"还是算了"）
+  - 两分支开头**明显不同**，后续在 seen3415:135 汇合（之后是同一段坡道对话）—— 即选择结果被正确应用，游戏可正常按分支推进。
+- **结论修正**：会话早前的判断（form=20 fix 解开分发）**不成立**。A/B 测试（临时去掉 form=20 fix）显示分发仍正确 —— 即 **form=20 修复对分发不是决定因素**，决定因素是**选择结果能否送达脚本**。
 
-### 验证
-- 新增单元测试 `call_property_reference_tests::scalar_{str,int}_call_prop_accepts_lone_index_sub`：
-  - FM_STR + `sub=[0]` + `Value::Str` → 整值写入 ✅
-  - FM_INT + `sub=[0]` + `Value::Int` → 整值写入 ✅
-  - FM_STR + `sub=[ELM_ARRAY,0]`（真实列表下标）→ 仍 bail ✅
-  - `cargo test -p siglus_scene_vm --lib call_prop_accepts_lone_index_sub` → **2 passed**。
-- `cargo build -p siglus_scene_vm --bin clannad_ctl` ✅；`--bin siglus_engine` ✅（均"Finished"，无 error；stderr 的 `[exit code:1]` 是 PowerShell `Select-Object` 管道假象）。
-- **端到端（选择点 choose(i) 进第 i 项分支）尚未在本会话跑通**：headless 驱动从 seen0414 到选择点极慢（intro→line248 已到 frame≈6060，仍未见选项），且受 §19.8"choose 结果经 `_cl_forclannad` 分发"限制；该闭环需按 §19.8 用**窗口态引擎 + `skip`/MCP** 验证（`SG_CTL=SKIP:..@<frame>` 到选择点 → `choose(i)` → 观察分支 scene/line 是否随 i 变化）。
+### 无头送达限制（本次实测定性）
+- headless 下 `choose_selbtn` 默认可被 `selbtn_accepts_input` 拒绝（`open_anime_type!=0`），且 `deliver_selbtn_result` 由 **decide/close 动画**驱动，而动画按**墙钟**推进，快速 CPU 突发里不完成 → `result_delivered=false`，脚本拿不到结果 → 只能走默认分支。
+- `clannad_ctl` 的 `--skip-to-choice` 做了两处**测试台**回退：① 强制把 open-anime 拉满（`open_anime_cur_time=open_anime_time`、`decide/close_t=0`）让 choose 被接受；② 若 `!result_delivered`，按 `deliver_selbtn_result` 的语义把结果压回 `ctx.stack` 并 `notify_wait_key()`。之后脚本即按结果分发（上述 A/B 已证）。
+- 这**仅是无头测试台的回退**，不掩盖引擎本身的动画/送达路径；窗口态引擎（真实墙钟）由动画自然送达，不受此限。
 
-### 下一步
-1. 用窗口态引擎（或给 clannad_ctl 加 skip+`choose_selbtn(i)`）跑到真实选择点，验证 `choose(0)` 与 `choose(1)` 进入不同分支。
-2. 独立跟踪 §16.2 的 `str stack underflow`（include-call 字符串实参传递）—— 若它也在选择点触发，将一并处理；当前未在对话显示路径复现。
-3. 提交 `siglus_rs` 改动 + 更新本根仓库 submodule 指针与 `AGENT.md`。
+### form=20 修复（保留，已单测，但不作"解开分发"宣称）
+- `crates/siglus_scene_vm/src/vm.rs` 仍保留 `is_lone_scalar_sub` + `FM_INT/FM_STR` 放宽（`sub.is_empty() || 孤立下标`）—— 它消掉 §16.2 记的 `assign_call_prop_result` "form=20 sub=[0] unsupported" bail，是**无害、单测通过**的健壮性提升，但**不是**本次选择分发生效的原因（见上 A/B）。
+- 单测 `call_property_reference_tests::scalar_{str,int}_call_prop_accepts_lone_index_sub`（含真实列表下标仍 bail）✅。
+
+### 待确认（下一优先）
+- **窗口态引擎**自然送达路径是否也正确分发（本会话只能用无头+测试台送达回退验证；窗口态需按 §19.8 验证方式：`siglus_engine --bridge` 或 `--auto-start` + `SG_CTL=SKIP` 到选择点 → `choose(i)` 看分支 whether 随 i 变化）。
+- §16.2 的 `str stack underflow`（include-call 字符串实参传递）—— 本会话在对话显示与选择分发路径均未复现；若窗口态也未触发则可暂缓。
+
+### 说明
+- 命令速查（无头复现）：`set SIGLUS_LANGUAGE=ZH && E:\7_projects\clannad_mcp\siglus_rs\target\debug\clannad_ctl.exe --project E:\7_projects\clannad_mcp\diagnostics\clannad_test --scene seen0414 --skip-to-choice --choose-index 1`。
+- `diagnostics\logs\` 下已留 `final0.log/final1.log`（两分支对白）、`ctrace.log`（SG_CMD_TRACE 命令序列，约 40k 行）。
