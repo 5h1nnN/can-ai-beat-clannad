@@ -545,3 +545,123 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - [ ] （独立项）`_cl_forclannad` include-call 实参缺口（§16.2）若修好，可让 headless 顺畅走到选择点/SL，但非 MCP 阻塞。
 
 > 说明：`endings_map.toml`（诊断工程内）由用户填了 11 个 TRUE END 判定句，已用 `clannad_text --search` 验证唯一性并定位场景。文本判定逻辑已提交并通过 `--test-match` 实测。
+
+---
+
+## 18. 阶段2/3 接口定稿（2026-09-04，commit `ab63b64` 等）
+
+### 18.1 状态/事件/控制接口现况（`clannad_ctl`，无头+引擎 `SG_CTL` 共用状态源）
+- **读取（轮询，仅核心 + 日期）**
+  - `get_status` → `{scene, scene_no, line, blocked, name(说话人), text(当前对白), choices[], save_slots[], date}`
+  - 其中 **date** 是唯一保留“内容”的：`{"month":4,"day":14,"weekday":1,"text":"4月14日 星期一"}`（未到日期剧情点为 `null`）。
+- **事件（变化信号，内容不展开）**
+  - `bgm.changed`、`background.changed`、`portrait.changed` —— 仅当对应集合变化时返回（不透明 id 列表；首个观测仅建基线不输出）。
+  - `choice.appeared`（+自动 `choose`）、`ending`（按判定短语匹配）、`route.end`（return_to_menu/end_game）。
+- **控制**：`advance`、`choose`、`save`、`load`、`jump`（`syscom::menu_save_slot/menu_load_slot`、`request_sel_point_with_result`、`restart_scene_name`）。
+- **flag：按需求跳过**；**bgm/背景/立绘不做完整 id→名称映射**（id 太多不现实 → 改用“变化信号”，仅日期保留内容）。
+
+### 18.2 变更与取舍
+- 之前尝试过“资源 id→可读名称映射（nl_map.toml，45 bgm/503 bg/25 chr）”因条目过多、且 id→名称需人工/官方名单核证，**已废弃**；`nl_map.toml` 已删除，代码无残留引用。
+- 文件后期被改写加入 **结局/返标题检测**（`endings_map.toml`、`__all_endings.txt`、`ending_pending`/`match_ending`）——予以保留并与本模型共存（`ending`/`route.end` 事件）。
+- 已知引擎缺口（未修）：无头深推剧情在 `_cl_forclannad` include-call 字符串实参处会 `str stack underflow`/`call-prop form=20` 不支持；窗口态游玩不受影响。
+
+### 18.3 交付/环境
+- 提交：`fb51a19, e874fe2, 955ad53, 6d472e2, 01e602e, 106d111, f9884f9, b4ff920, ab63b64`（阶段0/1 + 阶段2/3 + 状态事件化）。
+- 隔离工程 `diagnostics/clannad_test`（junction + 空 savedata + `endings_map.toml`/`__all_endings.txt`），不触碰真实 Steam 存档。
+- 工作区已整理：测试脚本/日志/截图/反编译/证据统一在 `diagnostics/`（根 `.gitignore` 忽略，不入库）；`siglus_rs` 为子模块。
+
+### 18.4 下一步（阶段4）
+- 把上述接口封装为 **MCP Server（stdio）**：读取工具 `get_status/get_dialogue/get_choices/get_save_list`，通知事件 `bgm.changed/background.changed/portrait.changed/choice.appeared/ending/route.end`，控制工具 `advance/choose/save/load/jump`。
+- 可选：窗口态桥接（引擎 `SG_CTL` + 状态/事件导出）作为 MCP 后端；无头深推受 §18.2 缺口限制，暂以窗口态为准。
+
+---
+
+## 19. 快进 / 跳过到下一选项（2026-09-04，commit `3577cec`）
+
+### 功能
+- 引擎 `skip_to_next_choice(max)`：**一帧内突发循环**逐页推进——每页 `ctx.ui.reveal_message_now()`（瞬间显示完当前句）+ Enter 翻页 + `run_script_proc`/`tick_frame`——直到**出现真实选项**（`globals.selbtn`，即 CLANNAD `$mes_sel`，见 §19.3）、VM 停住或达到 `max` 步数。
+- 过程中收集整段对白（每行 name/text），结束以 `[CTL] skip| ...` 打印整段，并打印 `skip: choice reached ... choices=[...]`。
+- 触发：**游戏内按 Ctrl** 或环境变量 `SG_CTL = "SKIP:MAX@FRAME"`。
+- 用途：把“上百次 advance”合并为一次 `skip`，直接返回到下一选项点的整段文本/状态，供 MCP 使用。
+
+### 帧率说明（用户关心点）
+- **不受渲染/VSync 帧率限制**：快进在单次 redraw 内跑多个 VM 步（reveal-now + Enter 不依赖真实时间的打字机等待），是 CPU 密集型突发，低帧率下同样能瞬间快进。
+
+### 验证状态（诚实说明）
+- 代码已编译通过（`siglus_engine`）。
+- 窗口态自动化在本机会话**偶发稳定**（标题/剧情截图、部分页打开成功过，但空句柄导致多次失败），加上无头深推受 §16.2 `_cl_forclannad` 缺口限制，**尚未在这次自动运行中拿到完整的 `[CTL] skip` 输出证据**。
+- 手动验证方法：
+  - 运行 `E:\7_projects\clannad_mcp\siglus_rs\target\debug\siglus_engine.exe --project-dir "...\diagnostics\clannad_test"`（或游戏根）
+  - 进入剧情后**按 Ctrl**（或对窗口态用 `SG_CTL=SKIP:4000@<frame>`）→ 应快速推进到下一选项并打印整段 `[CTL] skip| ...`。
+
+### 19.1 引导修复（重要）
+- 之前用 `clannad_test` 跑引擎会 panic `vm init: scene not found: _start`，根因是**隔离目录缺 `GameexeZH.dat`**（junction 只连了 dat/g00/…，根文件的 GameexeZH.dat 未拷贝）→ 引擎解不出 `START_SCENE` → 回退默认 `_start` → Scene.pck 无此场景。
+- 修复：把游戏根 `GameexeZH.dat` 拷入 `clannad_test`（已验证可引导到 `_system_adv`、无 `_start` panic）。
+- 注意：**重建 `clannad_test` 时必须同时拷贝 `key.toml`、`Scene.pck`、`GameexeZH.dat`** 并建立资源 junction。
+- 附：wgpu/loader 的 `SocialClubVulkanLayer.json` 等 ERROR 属无害噪音（缺失 VK layer 文件），不影响运行。
+- 下轮接入 MCP 时可复用 `skip`（SG_CTL/宿主方法）替代大量 advance。
+- 结束另打印 **`[CTL] skip.segment {json}`**：一次性返回 `{scene,line,lines:[{name,text}...],choices:[...],state:{...}}`，便于 MCP 直接取整段。
+
+### 复用/兼容
+- 未改动外部已提交的 `clannad_ctl`/`clannad_text`/结局检测逻辑；仅在 `siglus_engine` 增加 skip；`AGENT.md` 其余段落保持外部更新。
+
+### 19.2 实测反馈修复（commit `22fc69e`）
+- **变日语**：之前须设 `SIGLUS_LANGUAGE=ZH`；现已改为**检测到 `GameexeZH.dat` 即默认 ZH**（未显式设语言时），无需环境变量。
+- **Ctrl 卡死/未响应**：根因①按住 Ctrl 触发系统按键**自动重复** → 每次重复都启动一次 4000 步突发循环；②单次突发在**同一帧内不停推进、不给渲染/消息泵让路**。
+  修复：
+  - 仅 **Ctrl 首按**（`!repeat`）触发；已触发或 VM 已停则 no-op。
+  - 快进改为**状态化渐进**（`SKIP_BURST` 页操作后让路给渲染），窗口持续显示、不再“未响应”但音乐照播。
+  - 结束仍一次性打印整段 `[CTL] skip| ...` 与 `skip.segment {json}`。
+- 附带说明：早期日志里 skip 在 seen0414 收集 82 行后继续，最终到 `_system_language` 遇 `unknown opcode=0x2d` 停止。该 `0x2d` **并非真正的独立引擎缺口**，而是 `GLOBAL.SELMSG`（选项命令）未实现导致 VM 把操作数当 opcode 读——见 §19.4（已修复）。
+
+### 19.3 卡顿 & 真选项（selbtn）修复（commit `2fe2310`）
+- **快进仍非常卡**：原因是 `SKIP_BURST=64` 每帧塞太多 VM 步，渲染/消息泵负担重。把 `SKIP_BURST` 降到 **12**，每帧页操作更少、让路更频繁，明显减负（CPU 突发仍瞬时）。
+- **卡在选项前一句（「这种东西根本没办法听…」）无法推进**：根因是 CLANNAD 的真实选项是 **`globals.selbtn`**（`$mes_sel` → `BtnSelectRuntimeState`，`BtnSelectChoiceState.text` 存选项文本），旧代码检测的是 `btnselitem_lists`（不是 CLANNAD 的选项机制），所以一直判定“无选项”而跳过；且虽然停在了选项处，**未渲染的选项浮层**挡住推进，点左键/Ctrl 都没反应。
+  修复：
+  - 新增 `ctl_selbtn_active`/`ctl_selbtn_choices`/`ctl_selbtn_cursor`，skip 改为**检测并停在 selbtn 选项**，选项文本从 `globals.selbtn.choices` 输出（而非 btnselitem_lists）。
+  - 在 selbtn 选项处**再按一次 Ctrl** → 自动选中高亮项（`ctl_selbtn_cursor`）继续推进，不再死锁。
+  - `skip.segment {json}` 的 `choices` 现在返回真实 CLANNAD 选项文本。
+- 验证提示：进入剧情按一次 Ctrl → 应推进到**真实选项**（selbtn）并停住、返回该选项文本；在选项处再按 Ctrl → 自动选中高亮项进入下段。
+
+### 19.4 真正的根因：`GLOBAL.SELMSG` 选项命令未实现（commit `ad0654e`，成功）
+- 核心问题：**CLANNAD `$mes_sel` 选项编译后是 `GLOBAL.SELMSG`（form 100）/ `SELMSG_CANCEL`（102），而 `dispatch_global_form` 完全没有处理这两个 form**（只处理了 `SELBTN` 76/77/126/127/128）。
+- 后果：VM 走到第一个选项时**不认识 `SELMSG`** → `[warn] unhandled form command chain [100], skipping` → **从不弹出选项**（`globals.selbtn.choices` 恒空，之前 §19.3 读 selbtn 时误以为选项走 SELBTN，实际是 SELMSG）→ VM 跳过命令后继续走，把紧随的操作数字节 `0x2d` 当成 opcode → **`unknown opcode=0x2d` 停机**。
+- 这也解释了为什么**普通点击推进也一样卡住**（不是 skip 的锅，是引擎缺 `SELMSG` 指令）、为什么卡在选项前两句、以及为什么在 `seen0414:697` 的 COMMAND 之后立即撞 `0x2d`。
+- **修复**：在 `dispatch_selbtn_command` 里把 `GLOBAL.SELMSG`/`SELMSG_CANCEL` 映射成 `SELBTN`/`SELBTN_CANCEL` 处理——解析选项文本进 `globals.selbtn.choices`、置 `started=true`、`wait_key()` 让 VM 真正停在选项处等待选择。这样选项既被呈现，也能被 MCP/skip 层读到；`0x2d` 停机随之消失。
+- **验证**（本次运行，skip_trace.log）：
+  - 不再 `0x2d` 停机，`halted=false`、`unknown_opcodes=""`。
+  - 停在 `seen0414:697`，`selbtn_started=true`、`selbtn_choices=2`、`wait=[key]`（真正等待选择）。
+  - 一次 Ctrl 即停对（不再要按两次）；选项处再按 Ctrl（`retrigger@choice picked=0`）自动选中高亮项，继续推进到**下一个选项** `seen3415:135`（`selbtn_choices=2`，「好像说过火了。」）——整条选择链路打通。
+- 附：之前为定位此问题加的工程级修复与诊断（提交于本会话）：`f3e8cd8`（selbtn 检测需 `started` + skip trace）、`ee6ed43`（time-wait 快进）、`03e6d21`/`7b1e093`/`2f3dfe7`/`be87e04`（停机上下文/opcode 历史/SG_CMD_TRACE 诊断）。其中 `fcb2a1e`（跨场景 COMMAND 提前返回）只对**真正换 scene 的 FARCALL** 生效；`seen6900:17 CD_NONE` 那次是它误伤同场景消息 COMMAND 的回归，已收窄为仅 scene 变化时提前返回。
+
+### 19.5 帧率优化（profiling 定位 + 惰性 mwnd 刷新）
+- **性能剖析**（`SG_REDRAW_TIMER` + `SG_CTX_TICK_TRACE` 细分）：正常游玩每帧 `tick_ms≈8~13ms`、`frame_plan_ms≈2ms`、`render_ms≈4ms`、`TOTAL≈15~18ms`，卡在 60fps 附近。其中最大头是 **`ui.tick`**（每帧 ~3ms、与 delta 无关）。
+- **真正的大头是 `tick_additional_mwnds`（实测 ~45ms/帧）**：`ui.tick` → `tick_additional_mwnds` 遍历 `mwnd_instances`（CLANNAD 每场景常驻多个额外消息窗实例），**每个都完整执行 `tick_mwnd_only`**（窗框/头像/按键/emoji 图刷新 + 文本重焙 + 布局重建），**无论是否可见**。这同时解释“进新场景更卡”（场景内 mwnd 实例多）。
+- **修复（`cfe687d`）— 惰性 mwnd 刷新**：`tick_mwnd_only` 里，便宜的动画更新 + 字体扫描每帧仍跑；但当 mwnd **完全隐藏、不在动画中、且无内容/投影** 时，跳过昂贵的 `refresh_*`/文本重焙/布局重建。隐藏 mwnd 无屏幕精灵可重建，一变成可见立即响应。正常游玩显著流畅。
+- **快进步数（`261a115`）**：`SKIP_BURST` 从 12 降到 **4**（每帧最多 4 页操作），Ctrl 快进更平滑、每帧 VM 步负担更低。
+- 残余：**进入新场景仍有一次 ~0.5s 暂停** —— 属一次性成本（新场景 g00 背景首次同步解码 + 首次字體/文本烘焙 + wgpu 首次管线/纹理上传）。正常游玩已流畅；如需彻底消除，需异步/延迟资源加载（改动较大，暂缓）。
+- 诊断说明：本次会话加的 `SG_UI_TICK_TRACE`/`SG_MWND_TICK_TRACE`/`ctx_tick_mark +ms` 等**细粒度打印本身耗时**（`_ms` 字符串 fprintf 很贵，一度让盘面更卡），已完成并**移除**，保留原有 `SG_REDRAW_TIMER`/`SG_CTX_TICK_TRACE` 等开关。
+
+### 19.6 save/load 验证与 MCP 接口对齐（commit `cd9c4e7`）
+- **探针**：`clannad_ctl --verify-sl --save-at-frame N --slot S` 做保存→跳走→读回的往返。
+- **修复的坑**：`menu_save_slot`/`menu_load_slot` 只是**排队** `RuntimeSaveRequest`，实际执行靠 VM 在 `CD_COMMAND` 里 `drain_runtime_save_load_requests()`。原先 clannad_ctl 直接调这两个函数而不让 VM drain，故 load 永远拿到跳转后场景 → `ok:false`。**修复**：
+  - 新增 `SceneVm::drain_save_load_requests()`（宿主/ctl/MCP 可直接执行排队请求）与 `CommandContext::has_pending_runtime_save_load()`；
+  - 把 `sync_save_slots_from_disk` 暴露为 `CommandContext` 的公开方法，以便可靠刷新/读取存档数量。
+- **读档判定**：load 有效性以 **scene + 对话文本一致** 为准（`text_match`）；`current_line_no` 在 load 后会因从存档点恢复而差几行，非 bug。
+- **验证结果**：`--verify-sl` 往返 `ok:true text_match:true`，`saved_line=55 loaded_line=51`（line 差属恢复起点行号，文本一致）；存档文件 `savedata/0003.sav` 成功写盘。
+- **MCP 读档接口**：`emit_status` 现在上报 `save_count`（最大槽位数，CLANNAD 默认 100）+ `save_used`（非空槽位数）+ 每槽 `exist/title/msg`，读档工具可直接枚举存档数量与各槽状态。
+
+### 19.7 方案 A：引擎内部自动进入游戏（`--auto-start`，commit 本会话）
+- **目标**：让引擎启动后自动走“标题 → New Game → 第一行对话”，MCP 一启动即可读取剧情状态，无需手动点击。
+- **实现**：`siglus_engine.rs` 加 `--auto-start`/`SG_AUTOSTART` + `AutoStartPhase` 状态机（Wait → TitleAdvance → ClickNewGame → StoryStarted → Failed），在 `redraw` 里每帧 `auto_step()`：
+  - **Wait**：等 ~90 帧让引擎初始化；
+  - **TitleAdvance**：在系统/标题场景注入 **Enter**（`on_key_down/up(Enter)`），直到 `_system_title` 稳定；
+  - **ClickNewGame**：注入**游戏坐标**鼠标点击（`on_mouse_move/down/up` 分帧），候选扫描按钮中心；
+  - **StoryStarted**：检测到 `seen*` 场景且 `line>0`（第一行对话）→ 停止，MCP 接管。
+- **已验证**：✅ 引擎能自动驱动到 `_system_title`（Enter 进标题稳定）；`SG_AUTOSTART_TRACE` 显示注入的候选坐标。
+- **已知边界（诚实说明）**：New Game 按钮点击这一环，**引擎内部注入的 `on_mouse_move/down/up` 无法稳定命中标题按钮** —— 因为 CLANNAD 标题按钮命中测试依赖**渲染出的精灵像素 alpha**（`hit_test_render_sprite`），注入点击与渲染精灵的时序/坐标在无头自动环境下不匹配。而**手动/窗口自动化点击（已验证 `post_newgame.ps1` / `map_menu2.ps1`）能进**。
+- **结论**：方案 A 的“全自动进入到第一行”目前受限于引擎按钮命中机制，**New Game 这一步最稳的是窗口自动化（`PostMessage` 点击窗口坐标）或手动点击**，而非纯引擎内注入。已驱动的 Title→标题画面可复用；若要走通全自动，需让引擎在渲染后构建精灵时机点注入，或改用窗口自动化点击 New Game（坐标需窗口缩放映射）。
+- **建议**：MCP 后台用 `--auto-start` 驱动到标题 + 一次窗口自动化点击 New Game 进剧情；或先让 agent 通过 `STATE` 读到 `_system_title`，再由 agent 决定。
+
+## 阶段 5（可选，未定）：headless 深推
+- 无头深推受 §16.2 `_cl_forclannad` 缺口限制，暂以窗口形态为准（§0 D2）。
