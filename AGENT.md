@@ -665,3 +665,47 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 
 ## 阶段 5（可选，未定）：headless 深推
 - 无头深推受 §16.2 `_cl_forclannad` 缺口限制，暂以窗口形态为准（§0 D2）。
+
+---
+
+## 19.8 MCP Server + 实时桥（plan-B）落成 + 确认 choose 引擎缺口（本会话 2026-09-08）
+
+### 已交付（提交 `siglus_rs@a3eb708`，mcp_server 已于 `16a996e` 等落库）
+- **MCP Server（Python, mcp 2.2.0 v2 `MCPServer`，10 工具）**：
+  - 读：`get_status` / `get_dialogue` / `get_choices` / `get_save_list`
+  - 控制：`advance` / `choose` / `skip_to_choice` / `save` / `load` / `jump`
+  - 桥：`src/mcp_server/bridge.py`（TCP 客户端，轮询 STATE 直到动作生效返回**执行后**状态）；引擎 `--bridge`（或 `CLANNAD_BRIDGE=1`）开本地 TCP 端口，一条命令一连接。
+- **引擎 control/state 修复**：
+  - `ctx_state_json`：新增 `halted`、`save_count`、`save_used`、`save_slots`(占用槽)；**选项改读 `selbtn.choices`**（CLANNAD `$mes_sel` 真选项），回退 `btnselitem_lists`。
+  - `advance`：不再是单次 Enter（只揭示不推进），改为**逐帧 pump `run_script_proc`/`tick_frame` 直到文本/行变化**。
+  - `choose`：新增 `CommandContext::choose_selbtn()` 直接走 `finish_selbtn`（镜像鼠标 decide 路径），而非仅设 pending result。
+  - `skip`：把收集的对话段作为 `skip_lines` 写入 bridge 状态（`skip()` 返回整段 + 到达选项时的状态）。
+  - `load`：读档后注入合成鼠标移动 + Enter 并 pump 几帧，使恢复的对话框**无需用户 hover 即出现**（修复“load 要 hover”）。
+  - `save_dir`：优先 `savedata_zh`（Steam 简中版存档目录），回退 `savedata`；`file.rs`/`stage.rs` 读路径也加 `savedata_zh` 候选。
+  - 启动时 `sync_save_slots_from_disk`，MCP 立即读到真实存档数。
+  - `on_mouse_wheel`：**选项列表非空时拦截滚轮推进默认项**（修复“滚轮自动选第一个”）。
+- **方案 A auto-start（§19.7 基础上）**：New Game 按钮改为**先 hover 轮询命中（`newgame_hit`）再同帧 move→down→up**；第一行对话判定改为 `scene 是 seen* 且消息窗口有文本`（不再只 `line>0`）；标题稳定后停止 Enter、过 `_system_adv`/`_system_start` 后继续 Enter 推进到剧情。实测 3/3 稳定到 `seen6900:17`（约 29s）。
+
+### ✅ 已验证通过
+- `save`/`save_slots` 检测：`get_status` 报 `save_count=100 save_used=2 save_slots=[0,1]`（此前 0，因读了错误目录）。
+- `advance` 稳定推进行号；`load` 后对话框自动出现；`skip` 返回 `skip_lines` 整段；`get_status().choices` 正常返回真实选项。
+- MCP Server stdio：`tools/list` 10 工具；MCP Inspector 可加载（`from mcp_server.bridge import` 绝对导入修复 `mcp dev` 单文件加载问题）。
+
+### ⚠️ 未解决/确认的引擎缺口（本会话确认为**非 off-by-one**，是 §16.2 真实缺口）
+- **`choose()` 无论手动还是 MCP，都进第一项**。SG_SELBTN_TRACE 决定性证据：
+  - 手动选第 2 项：`deliver result=1 choices=2 cursor=1`；`choose(1)`：`deliver result=1`；两条路径 result 都正确指向第 2 项，**但脚本仍进第一项**。
+  - `ctx_return` trace：`$mes_sel` 结果**不走 `take_ctx_return` 常规命令返回栈**；选择后进入 `_cl_forclannad` 场景，其 `include-call` 返回 `246`/`-1`（choice→分支 分发），而这些值不被正确应用。
+- **根因 = §16.2 `_cl_forclannad` include-call 缺口**：`ASSIGN` 的 STR 实参未入栈 → `str stack underflow`；`assign_call_prop_result` 对 include-call 参数 form=20 `sub=[0]` 不支持。CLANNAD `$mes_sel` 的选择结果经 `_cl_forclannad` 分发，此缺口导致**所有选项都走默认/第一条分支**。**这不是 off-by-one（已排除：result=1 正确仍进第一项），而是引擎 include-call 实参传递缺陷**。
+- AGENT.md §16.2 已记：真正修法是**实现 include-call（`cur_call.*` / `CALL.L/K` / `__elm` 参数）的字符串实参传递与 form=20 赋值**，属中等以上引擎工作量。
+- （另：load 回开头再 skip 偶发卡死/停在 `_system_language`，同属深推/runtime 状态残留，优先级低于 `_cl_forclannad`。）
+
+### 下一步目标（主）
+1. **修复 §16.2 `_cl_forclannad` include-call 字符串实参传递 + form=20 赋值** → 让 CLANNAD 选择分发真正生效 → 手动/`choose()` 能选不同分支 → **游戏可正常游玩分支**。
+   - 入口：`_cl_forclannad` 场景、`$mes_sel` 后的 include-call（`cur_call.*`/`CALL.L/K`/`__elm`）、`assign_call_prop_result` 对 form=20 的处理。
+   - 验证：走到真实选择点，`get_choices` 返回多选项，`choose(i)` 进第 i 项分支；`manual` 选第 2 项进第 2 项。
+2. （次要）深推/load-back 后 skip 的 runtime 残留卡死。
+
+### 状态
+- 已提交：`siglus_rs@a3eb708`（引擎/桥/control+state 修复）；`mcp_server` 已落库（16a996e 等）。
+- 未提交：本根仓库 submodule 指针（待 `git add siglus_rs` 提交 `AGENT.md` 与指针）。
+- **可玩性阻塞**：`_cl_forclannad` 缺口 → `choose` 不可用 → 分支无法按选择进入。修复它是主线，已定位未实现。
