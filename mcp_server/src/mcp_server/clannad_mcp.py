@@ -62,14 +62,15 @@ def get_choices() -> list[str]:
 
 @mcp.tool()
 def get_save_list() -> dict:
-    """列出存档：最大槽位数(save_count)、当前已用(save_used)、占用槽列表。
+    """列出存档：最大槽位数(save_count)、当前已用槽数(save_used)、已占用槽索引列表。
 
-    注:桥的 state 目前返回 save_slots 为总数而非明细,此处先给槽位总数。
+    已用槽 = 磁盘上实际存在的存档（来自 savedata_zh 目录）。
     """
     st = _snapshot()
     return {
-        "save_count": st.get("save_slots", 0),
-        "slots": st.get("save_slots", 0),
+        "save_count": st.get("save_count", 0),
+        "save_used": st.get("save_used", 0),
+        "save_slots": st.get("save_slots", []),
     }
 
 
