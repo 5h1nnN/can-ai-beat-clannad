@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from mcp.server import MCPServer
 
-from .bridge import get_bridge
+from mcp_server.bridge import get_bridge
 
 mcp = MCPServer(
     "clannad-mcp",
