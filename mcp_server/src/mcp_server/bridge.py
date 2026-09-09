@@ -29,30 +29,52 @@ import socket
 
 # File the engine writes the ephemeral port into.  Start the engine with
 # CLANNAD_BRIDGE=1 and CLANNAD_BRIDGE_PORT_FILE=<this path>.
-PORT_FILE = os.environ.get(
-    "CLANNAD_BRIDGE_PORT_FILE",
-    r"E:\7_projects\clannad_mcp\clannad_bridge.port",
-)
+_DEFAULT_PORT_FILE = r"E:\7_projects\clannad_mcp\clannad_bridge.port"
+PORT_FILE = os.environ.get("CLANNAD_BRIDGE_PORT_FILE", _DEFAULT_PORT_FILE)
+
+
+def _candidate_port_files() -> list[str]:
+    """All the places the engine may have written its port file.
+
+    The engine default is a *relative* `clannad_bridge.port` in its own current
+    working directory, while this client default is the absolute
+    `_DEFAULT_PORT_FILE`.  They only coincide when the engine is launched from
+    `E:\\7_projects\\clannad_mcp`.  To be robust, probe the explicitly configured
+    path first, then the absolute default, then `clannad_bridge.port` in the
+    client's current working directory (and its parent), so a separate-terminal
+    launch in any directory is still found.
+    """
+    candidates: list[str] = []
+    if PORT_FILE:
+        candidates.append(PORT_FILE)
+    if _DEFAULT_PORT_FILE not in candidates:
+        candidates.append(_DEFAULT_PORT_FILE)
+    cwd = os.path.abspath(os.getcwd())
+    for d in (cwd, os.path.dirname(cwd)):
+        candidates.append(os.path.join(d, "clannad_bridge.port"))
+    return candidates
 
 
 def _read_port(timeout: float = 30.0) -> int:
-    """Wait for the engine to write its port file, then return the port."""
+    """Wait for the engine to write a port file, then return the port."""
     import time
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if os.path.exists(PORT_FILE):
-            try:
-                with open(PORT_FILE, "r", encoding="utf-8", errors="replace") as f:
-                    raw = f.read().strip()
-                if raw:
-                    return int(raw)
-            except (OSError, ValueError):
-                pass
+        for path in _candidate_port_files():
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        raw = f.read().strip()
+                    if raw:
+                        return int(raw)
+                except (OSError, ValueError):
+                    pass
         time.sleep(0.2)
     raise RuntimeError(
-        f"engine didn't write {PORT_FILE} within {timeout}s; "
-        "start siglus_engine.exe with CLANNAD_BRIDGE=1 and CLANNAD_BRIDGE_PORT_FILE set"
+        "engine didn't write a port file within {}s; "
+        "start siglus_engine.exe with CLANNAD_BRIDGE=1 and "
+        f"CLANNAD_BRIDGE_PORT_FILE={PORT_FILE}".format(timeout)
     )
 
 
