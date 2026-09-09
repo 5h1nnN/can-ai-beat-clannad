@@ -762,3 +762,8 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
   - **两分支明显不同且与选项正确对应** → `choose(i)` 真正进入第 i 项分支。
 - 日志：`diagnostics/logs/win_fix0.log` / `win_fix1.log`。对比可复制 `win_norm{0,1}.log`（修复前两选皆第 1 项）。
 - 诊断工具（保留，gitignore）：`diagnostics/scripts/drive_sig_engine_choose.ps1`（--auto-start 正常引导 → SKIP 到选择点 → CHOOSE → 记录分支对白 + `selbtn` 状态）。`SG_SELTRACE`（vm.rs 诊断，env-gated）、状态 JSON 的 `selbtn.{result,result_delivered,...}` 便于观测。
+
+### ✅ 附：选择后对话框自动推进（无需 hover，commit `2d0b2fd`）
+- 现象：MCP/程序化 CHOOSE 后，后续对话框不自动出现/推进，需光标 hover 窗口（mwnd 文本填充挂在鼠标等待上）。
+- 修复：与已修的 LOAD 一致，`BridgeCmd::Choose` 在 `choose_selbtn` 后注入**合成光标移动到屏幕中心 + Enter + pump 若干帧**，使选择后对话框自动出现并推进。
+- 已实测：CHOOSE:1 仍正确到 seen0414:798（无回归），对话框自动推进。
