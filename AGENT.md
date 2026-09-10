@@ -796,3 +796,15 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - 修复：把"有待决选择"（`selbtn.started` 或 `choices` 非空）也视为"故事已开始"，让自动启动立刻交棒、不再注入。
   （另有两条加固：`handle_selbtn_key(Enter)` 优先取指针所在项；`BridgeCmd::Advance` 的 `at_choice` 直接读 selbtn 状态。）
 - 回归自测：`--scene seen0414 --skip-to-choice --choose-index {0,1} --natural --raw-choose` 分别到达对应分支，未回归。
+## 19.12 真因（二）：READY 阶段的待决选择被当成"没有选择"，导致注入 Enter 把选择收成默认值 0
+
+- 症状（用户实测，MCP 打开）：手点恒第一项；**且 load 到选择点选项不立刻出现，要 advance 一下**（后者是昨天修过的，回归）。
+- 机制：`ctl_selbtn_active()` = `started && !choices.is_empty()`，而注释已写明 CLANNAD 在 **READY/prepare 阶段先填 `selbtn.choices`，之后 `started` 才翻 true**
+  （当初只按 choices 判定会让 skip 提前一行停住，作者为避开这个副作用而加了 `started`）。
+  但在那个窗口期：`pump_skip` 的 break 判据、`BridgeCmd::Advance` 的 `at_choice`、`BridgeCmd::Load` 的重新呈现分支**都认为"没有选择"**，
+  于是照常注入 Enter。这个 Enter 虽然不被 SelBtn 接受（尚未 started），**但仍会推进脚本**：
+  选择以默认结果 0 收尾（→ 恒第一项），同时 on-stage 选项项被拆掉（→ load 后选项不出现）。
+- 修复：新增 `ctl_choice_pending()` = `started || !choices.is_empty()`，所有"要不要注入输入 / 要不要交棒"的判断都改用它：
+  `pump_skip` 的 break、`BridgeCmd::Advance` 的 `at_choice`、`BridgeCmd::Load` 的 reprepare 分支、自动启动的交棒判定。
+  代价是 skip 可能提前一行停住（正是原作者想避免的那个副作用），但相比"选择永远走第一项"这是明显划算的一侧。
+- 回归自测：`--choose-index {0,1} --natural --raw-choose` 分别到达对应分支。
