@@ -784,3 +784,15 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - **回归自测**：`clannad_ctl --scene seen0414 --skip-to-choice --choose-index {0,1} --natural --raw-choose`
   仍分别到达对应分支（0→「好，把我的原创说唱录进去好了。」，1→「虽然之前把我单独留在房间里的时候…」）。
 - 说明：本会话（09-10）其余改动已全部回退到 09-09 23:01 状态（备份分支 `backup/2026-09-10-session`），只保留这一条修复。
+## 19.11 真凶：`--auto-start` 在选择点每帧注入 Enter（`c44fece` 之后）
+
+- 现象隔离（用户实测）：MCP 关 → 手点正常；MCP 开 + `choose(i)` → 正常；**MCP 开 + 手点 → 恒第一项**。
+- 真因：`siglus_engine.rs` 的自动启动处理**每帧都在跑**，即使 `auto_start_phase` 已是 `StoryStarted`
+  （该 match 分支为空，而注入 Enter 的两段代码在 match **之前**）。它唯一的提前返回条件是
+  `story_line_visible = is_story && line > 0 && !msg_text.is_empty()`。
+  **选择点上消息窗没有文本**，条件为假 → 落到下面的 `if is_story && blocked` → **每帧注入一个 Enter**
+  → Enter 决定选择（原本用 `cursor`，未移动时为 0）并锁定第一次交付 → 玩家正确的鼠标点击来得太晚、被忽略。
+- 为什么只有开 MCP 才出现：不带 `--auto-start` 的启动方式根本不会跑这段代码。
+- 修复：把"有待决选择"（`selbtn.started` 或 `choices` 非空）也视为"故事已开始"，让自动启动立刻交棒、不再注入。
+  （另有两条加固：`handle_selbtn_key(Enter)` 优先取指针所在项；`BridgeCmd::Advance` 的 `at_choice` 直接读 selbtn 状态。）
+- 回归自测：`--scene seen0414 --skip-to-choice --choose-index {0,1} --natural --raw-choose` 分别到达对应分支，未回归。
