@@ -767,3 +767,20 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - 现象：MCP/程序化 CHOOSE 后，后续对话框不自动出现/推进，需光标 hover 窗口（mwnd 文本填充挂在鼠标等待上）。
 - 修复：与已修的 LOAD 一致，`BridgeCmd::Choose` 在 `choose_selbtn` 后注入**合成光标移动到屏幕中心 + Enter + pump 若干帧**，使选择后对话框自动出现并推进。
 - 已实测：CHOOSE:1 仍正确到 seen0414:798（无回归），对话框自动推进。
+## 19.10 修复：MCP/bridge 连接时，窗口手选恒为第一项（本会话唯一保留的改动）
+
+- **现象**（用户实测，条件已隔离）：MCP 关闭 → 窗口手点正常；MCP 打开 + `choose(i)` → 正常；
+  **MCP 打开 + 窗口手点 → 永远进第一项**。
+- **机制**：bridge 为了推进消息等待会**注入合成 Enter**。而 `handle_selbtn_key` 的 Enter 分支用
+  `self.globals.selbtn.cursor` 解析选择，光标在玩家移动高亮前恒为 0；且第一次交付会置 `result_delivered` 锁定，
+  于是真实鼠标点击（日志证明命中与索引都正确，`hit=Some(1)`）来得太晚、被忽略。
+  MCP 关闭时没有注入，所以手点正常——这就是之前一直查不到的盲点。
+- **修复**（两处加固）：
+  1. `runtime/mod.rs` `handle_selbtn_key(Enter)`：优先用指针所在选项 `selbtn_hit_index(mouse_x, mouse_y)`，
+     指针不在任何选项上才回退到光标（键盘操作行为不变）；
+  2. `siglus_engine.rs` `BridgeCmd::Advance`：`at_choice` 判定除原有的 `ctl_selbtn_active`/`ctl_choices` 外，
+     直接读 selbtn 状态（`started` 或 `choices` 非空）——原先只认"完全激活"态，在选项已上屏但未激活的窗口期会漏判，
+     从而注入 Enter 把选择定死。
+- **回归自测**：`clannad_ctl --scene seen0414 --skip-to-choice --choose-index {0,1} --natural --raw-choose`
+  仍分别到达对应分支（0→「好，把我的原创说唱录进去好了。」，1→「虽然之前把我单独留在房间里的时候…」）。
+- 说明：本会话（09-10）其余改动已全部回退到 09-09 23:01 状态（备份分支 `backup/2026-09-10-session`），只保留这一条修复。
