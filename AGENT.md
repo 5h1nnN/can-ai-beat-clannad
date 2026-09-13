@@ -808,3 +808,76 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
   `pump_skip` 的 break、`BridgeCmd::Advance` 的 `at_choice`、`BridgeCmd::Load` 的 reprepare 分支、自动启动的交棒判定。
   代价是 skip 可能提前一行停住（正是原作者想避免的那个副作用），但相比"选择永远走第一项"这是明显划算的一侧。
 - 回归自测：`--choose-index {0,1} --natural --raw-choose` 分别到达对应分支。
+## 19.13 当前进展总结（2026-09-11）：观测口径统一，本会话行为改动全部回退
+
+> **⚠️ 19.10 / 19.11 / 19.12 三节描述的"修复"全部已被实测否掉并撤销。** 它们只作历史记录，
+> **不代表当前行为**，后续会话不要据此推断代码现状。
+
+### 当前仓库状态
+
+- `siglus_rs` HEAD `65a144a`；root HEAD = 本节提交。
+- **行为代码 = 2026-09-09 23:01 基线**（`d1b9d44` / `9bed872`）。相对基线的差异**全部是只读日志**：
+  - `siglus_engine.rs`：`[BRIDGE]` 桥接命令日志、`[BUILD]` 启动身份日志；
+  - `runtime/mod.rs`：`[SELBTN]` 解析事件（`mouse_up` / `finish_selbtn` / `choose_selbtn` /
+    `POST_SEL_POINT` / `TAKE_SEL_POINT`，均带 `pid=`）；
+  - 落点统一到工作目录的 `engine_state.log`；`TAKE_SEL_POINT -> None` 的每帧噪声已去掉。
+- 备份分支（随时可恢复或挑拣）：`siglus_rs` `backup/2026-09-10-session` = `b4625b1`；
+  root `backup/2026-09-10-session` = `4a01fee`。
+
+### 本会话被实测否掉的行为改动（勿重复）
+
+| 提交 | 内容 | 实测结果 |
+|---|---|---|
+| `c44fece` | Enter 优先取指针所在项 | 无效 |
+| `cfdbe5e` | autostart 不在选择点注入 Enter | 无效 |
+| `737c092` | READY 窗口视作"有待决选择"（全局） | **skip/advance 永久失效** |
+| `2ca0cb6` / `f8d63eb` | load 保留最外层场景帧 / 从 saved stream 取 PC | 读档后回标题画面 |
+| `1896907` | 同上放宽，仅限 load 路径 | **选择再次坏掉** |
+| `f56bb4a` | load 后注入一次模拟点击 | **选择恒第一项**（中心点落在居中的选项上，程序化抢先交付并锁定） |
+
+已在 HEAD 中全部 revert：`8349b9d` / `253c655` / `c5cb697` / `1749fe9` / `222ded5` / `0e0e980` / `8d1d86f`。
+
+### 已验证的事实（可作后续依据）
+
+1. **选择链路本身是正确的**（窗口实测日志）：鼠标点第 2 项 → `finish_selbtn result=1` →
+   `POST_SEL_POINT result=1 pending_before=None` → `TAKE_SEL_POINT -> Some(1) at seen0414:798`
+   （798 = 第 2 项分支）。所以"值被改成 0 / 被别处抢先"这类假设**都不成立**。
+2. **`selbtn.choices` 在选择被取走后仍然非空**（`bridge_cmd.log`：`seen0414:704 ... choices=2`）。
+   ⇒ 任何把"`choices` 非空"当"有待决选择"的判据都是陷阱；本会话在 **skip/advance** 与 **load**
+   两处各踩了一次。判据必须基于更精确的状态（sel point 身份 / 状态机阶段），而这需要先本地复现。
+3. `pending_sel_point_result` 是**单槽邮箱**；实测 `pending_before` 恒为 `None`，未发现抢占。
+4. `--scene` 直启可在本机复现"场景根 return 停机"（`clannad_ctl` 会打印 `halt_ctx`），
+   这是目前唯一可稳定复现的 VM 停机形态。
+
+### 观测口径（本会话最大收获，必须固化）
+
+- Windows 上**正在运行的 exe 无法被覆盖**：cargo 会报
+  `error: failed to remove file ... 拒绝访问 (os error 5)` —— **编译成功但二进制没落地**；
+  而常用的 `^error` 过滤**抓不到这一行**（它是 `> error: failed to remove`）。
+- **关窗口 ≠ 进程退出**（`--bridge` 启动尤其如此）；多实例并存时，"你操作的 / MCP 连接的是哪一个"
+  无法凭感觉判断，而重启电脑能一次性清除 —— 这正是"同一版本、重启前坏重启后好"的最可能解释。
+- ⇒ 固定规矩：
+  1. 改动前先 `Stop-Process -Name siglus_engine -Force`，并用 `Get-Process` 确认无残留；
+  2. 构建后必须确认 exe 的 **size/mtime 变化**且没有 `failed to remove`；
+  3. 每次测试后先核对 `engine_state.log` 的 `[BUILD]` 行（`exe/size/mtime_unix/pid/bridge/project/cwd`）
+     与刚构建的 exe 一致，再谈结论；
+  4. 只有 1–3 全通过，测试结果才算证据。
+- 教训：本会话多次"改→测→下结论"，但**测的与改的可能不是同一份**，导致至少 5 次错误推断
+  （包括"某修复无效"这类判断）。**先统一观测口径，再谈机制。**
+
+### 未解决（按优先级）
+
+1. **幻想世界之后下一场景起不来的停机**（原始问题，非本会话引入）。线索：与"日期变化"相关、
+   不同路线表现不同；形态是 `seen6900:69` 根 `return` 时 `scene_stack` 为空 → `exec_return`
+   取到非法 `return_pc` → `CD_NONE`。唯一尚未记录的场景帧变异点是
+   `restore_inline_exec_checkpoint` 里的 `scene_stack.truncate(checkpoint.scene_depth)`（`vm.rs:676`）。
+   **下次处理应先给它加探针，并用一次通过上述 1–4 校验的测试确认。**
+2. **load 到有选项处选项不立刻出现** —— 用户判定为小问题，**暂时不管**。
+   （已知 `BridgeCmd::Load` 的 reprepare 分支以 `ctl_selbtn_active` 为条件；任何放宽都会踩第 2 条陷阱。）
+
+### 工作方式（对后续会话的约束）
+
+- **不在没有本地复现的情况下修改 selbtn / load / skip 的行为代码**；
+- 本机复现优先：`clannad_ctl --scene X --skip-to-choice --choose-index N --natural [--raw-choose]`，
+  必要时注入 `on_mouse_move/on_mouse_down/on_mouse_up` 复刻窗口鼠标路径；
+- 提交行为改动前，先跑两条选择回归：`--choose-index 0` → 第 1 句、`--choose-index 1` → 第 2 句。
