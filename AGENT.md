@@ -881,3 +881,81 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - 本机复现优先：`clannad_ctl --scene X --skip-to-choice --choose-index N --natural [--raw-choose]`，
   必要时注入 `on_mouse_move/on_mouse_down/on_mouse_up` 复刻窗口鼠标路径；
 - 提交行为改动前，先跑两条选择回归：`--choose-index 0` → 第 1 句、`--choose-index 1` → 第 2 句。
+## 19.14 停机问题定位进展（2026-09-13）：根因是「命令未返回字符串」
+
+> 本节只记录**已由有效测试证实**的结论。所谓"有效测试"= `engine_state.log` 首行 `[BUILD]` 的
+> `size` 与刚构建的 release exe 一致（见 19.13 的观测规程）。
+
+### 用户发现的新形态（关键转折）
+
+第三处停机：**随意游玩时、位于某场景中间、与"日期变化"和"幻想世界"都无关**。
+STATE 里 `halted=true`、`scene=_system_language line=-1`（这是**停机后的污染**，见下）、
+对话框仍显示古河的台词。⇒ 说明停机**不是**发生在场景边界，前两处（读档、日期）也不是通解。
+
+### 定位链（每一步都有日志证据）
+
+1. **停机路径指名**：`halt_reason=Some("handler_err_fatal_noretry")` = `vm.rs:3855`
+   —— 即"某个指令处理器返回 `Err`，VM 按『脚本错误即致命』停机"。
+2. **错误文本拿到**：`[ENGINE_SCRIPT_ERROR] run_script_proc_continue failed: str stack underflow:
+   scene=_cl_forclannad line=56 pc=0x4d5`（另一次运行报在 `seen6416:948 pc=0x20047`）
+   —— **字符串栈下溢**。
+3. **下溢现场**：`[ENGINE_STR_UNDERFLOW] scene=seen6416 line=948 pc=0x20047
+   str_len=0 int_len=23 ctx_len=0 ctx_top=[] call_depth=5 scene_stack=2`
+   ⇒ **三个栈里都没有那个字符串**：排除"值被推到错栈"。
+4. **解码历史**（新→旧）：
+   `ASSIGN(0x20)@0x2003a ← PROPERTY(0x05)@0x20039 ← COMMAND(0x30)@0x20024 ←
+    PUSH(0x02)@0x2001b ← PUSH@0x20012 ← ELM_POINT@0x20011 ← PUSH@0x20008 ← PUSH@0x1ffff ←
+    PUSH@0x1fff6 ← ELM_POINT@0x1fff5 ← NL@946 ← GOTO@946`
+5. **原始字节解码**（小端，窗口 `pc-64`）：
+   - `PUSH form=10(fm_int) value=108` @0x20012
+   - `PUSH form=20(FM_STR) value=0` @0x2001b   ← **推入了一个字符串实参**
+   - `COMMAND` @0x20024，操作数 = `[0, 1, 20, 0, 23]`
+   - `ASSIGN` @0x2003a，操作数 = `left_form=23(Element) right_form=20(FM_STR) al_id=1`
+6. **结论**：这条语句形如 `<元素>.属性 = $某命令(108, "…")`。脚本**确实要一个字符串返回值**
+   （`right_form=20=FM_STR` 合法；端序判断由 SELTRACE 的 `ret_form=20 v=Some(Str("ZH"))` 交叉验证）。
+   字符串**实参**被调用正常吃掉，但调用**应该返回的字符串从未被产生**。
+
+### 已被有效测试排除的方向（不要再回头查）
+
+| 假设 | 排除依据 |
+|---|---|
+| CD_NONE / 未知操作码 / PC 落入填充字节 | `unknown_opcodes=""`、`last_opcode=None`、`last_pc=None` |
+| 场景边界 `return` 深度错配 | `hist[0]` 是 `ASSIGN` 而非 `RETURN`；`halt_reason` 不是那几个 return 分支 |
+| 处理器 `Err` 由 `?` 路径传出 | `ENGINE_SCRIPT_ERROR` 在两次有效测试中均为 0，且 `dump_vm_halt` 仍被写 |
+| 处理器 `Err` 由 5 处 `let _ = vm.run_script_proc()` 吞掉 | 给这 5 处接上捕获后仍为 0（第三次运行才在 `?` 路径上捕获到文本） |
+| `ASSIGN` 的 `right_form` 被解码错 | `right_form=20` 是合法 FM_STR |
+| 字符串被推到 `ctx.stack`（错栈） | `ctx_len=0`、`ctx_top=[]` |
+| 选择/注入 Enter / autostart / READY 窗口 | 见 19.10–19.12，全部已被撤销；选择链路实测正确 |
+
+**教训**：前几轮我一直在**下游症状**（场景边界、PC、注入输入）上打转；真正的失败在
+**命令调用的返回值编组**（§16.2 include-call 字符串实参/返回值传递那一块，项目早期只修过
+`ddccc08` 的 form=20 `sub=[0]` 一小块）。
+
+### 唯一剩余未知 + 下一步探针
+
+**未知**：`CD_COMMAND` 的**操作数布局**（`[0, 1, 20, 0, 23]` 中哪个是命令索引、哪个是 `ret_form`），
+不能靠推理——`23` 同时是 Element 形式，若把它当 `ret_form` 会得出自相矛盾的结论。
+
+**下一步（一处，只读）**：在 `CD_COMMAND` 派发处记录
+```
+[ENGINE_CMD] scene=.. line=.. pc=0x.. cmd_idx=.. cmd_name=.. argc=.. arg_forms=[..]
+            ret_form=.. str_len_before=.. str_len_after=.. ctx_len_after=..
+```
+判读：`ret_form=20` 且 `str_len_after == before` ⇒ 返回值被丢（修编组）；
+`ret_form` 非 20 ⇒ 操作数解码错位（修 `CD_COMMAND` 解码）；`cmd_name` 不符 ⇒ 命令索引解析错。
+
+### 本轮新增的只读诊断（全部已落地，行为代码零改动）
+
+| 提交 | 内容 |
+|---|---|
+| `65a144a` | `[BUILD]` 启动身份（exe/size/mtime_unix/pid/bridge/project/cwd）+ `[SELBTN]` 带 pid |
+| `60ccf8a` / `bf231c2` | `[ENGINE_SCRIPT_ERROR]`：分别捕获 `?` 路径与 5 处 `let _ =` 路径的错误文本 |
+| `a67f03e` | `halt_reason`：8 处 `halted = true` 各带独立标签，并写入 `halt_context_dbg` |
+| `e0717d5` / `780128e` / `9b438be` / `7ce5f62` | `[ENGINE_STR_UNDERFLOW]`：场景/行/pc、三栈长度与栈顶、最近 12 条解码、`pc-12` 与 `pc-64` 原始字节 |
+
+### 仓库状态
+
+- `siglus_rs` HEAD `7ce5f62`；**行为代码 = 2026-09-09 23:01 基线**，差异全为只读诊断；
+- 本会话此前的行为改动均已 revert（含 `1896907`（load reprepare 放宽）与 `f56bb4a`（load 后模拟点击），
+  后者会把居中的选项列表误选，是"选择恒第一项"的直接原因）；
+- **load 到有选项处选项不立刻出现** —— 按用户意见**暂时搁置**。
