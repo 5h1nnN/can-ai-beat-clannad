@@ -970,18 +970,32 @@ STATE 里 `halted=true`、`scene=_system_language line=-1`（这是**停机后�
 `self.exec_command(...)` 前后加了只读探针，写入 `engine_halt.log`：
 
 ```
-[ENGINE_CMD] seq=.. scene=.. scene_no=.. line=.. pc=0x.. elm=[..] cmd_form_id=..
+[ENGINE_CMD] scene=.. scene_no=.. line=.. pc=0x.. elm=[..] cmd_form_id=..
              cmd_op_id=.. al_id=.. ret_form=.. argc=.. arg_forms=[..]
              str_len_before=.. str_len_after=.. int_len_after=..
              ctx_len_before=.. ctx_len_after=..
              call_depth=.. call_depth_after=.. scene_no_after=.. result=..
 ```
 
-- **门控**：只记录「带字符串实参」或「`ret_form == FM_STR`」的命令，上限 20000 条
-  （停机现场那条命令带一个字符串实参，**必然被记录**，同时避免每帧刷屏）；
 - `call_depth_after` / `scene_no_after` 用来看这条命令**是否进入了调用帧**（跨场景 include 调用会立刻返回，
   返回值要等 `CD_RETURN` 才落地，只有这两个字段能区分）；
-- 行为代码零改动；release exe 已重建（`size=59206607`，`mtime=09/14 11:46:47`，无 `failed to remove`）。
+- **不再写日志文件，改为 32 条内存环形缓冲**，由 `[ENGINE_STR_UNDERFLOW]` 探针在**失败现场**打印
+  （`recent_cmds=[...]`）。原因见下一节——第一版按「带字符串实参」门控写文件、上限 20000 条，
+  结果**上限在热循环里被烧光，失败现场那条命令根本没被记录**；
+- 行为代码零改动；release exe 已重建（`size=59210618`，`mtime=09/14 12:12:23`，无 `failed to remove`）。
+
+### 第一次探针运行的教训（2026-09-14 12:08，6MB 日志）
+
+用户跑了一次，`engine_halt.log` 6.7MB / 20002 行：**20000 条 `[ENGINE_CMD]` 全部用满**，
+最后一条是 `_cl_forclannad:135`，而停机现场在 `seen6416:948` —— **一次都没记到**。
+按场景统计：`_cl_forclannad:135` 独占 10959 条（一个每帧热循环），`_system_language:101` 1168 条。
+⇒ 「按条件门控 + 固定条数上限」在对局里必然失效；**能自证的方案只有「在失败现场 dump 环形缓冲」**。
+
+同时这次运行确认了停机的**确定性**：`[ENGINE_STR_UNDERFLOW]` 与上一次**逐字段相同**
+（`scene=Some("seen6416") scene_no=Some(165) line=948 pc=0x20047 str_len=0 int_len=23 ctx_len=0
+call_depth=5 scene_stack=2`，`raw_ops12`/`raw_tail64` 完全一致），
+`[ENGINE_HALT]` 的 `callstack=[…,#4ret=0x20047/rf=0,#5ret=0x0/rf=0 scenes=[…,#2seen6416:948pc=0x20047]`
+也完全相同。⇒ 复现稳定，值得把探针做扎实再跑第二次。
 
 ### 新证据（从 **09-13 23:39 那次有效运行**的 `engine_halt.log` 里读出来的）
 
@@ -1045,8 +1059,8 @@ enter_*_user_cmd_*(caller.ret_form = ret_form) → … → return_from_scene` �
 
 | 探针结果 | 结论 | 修复位置 |
 |---|---|---|
-| 停机附近那条 `[ENGINE_CMD]` 的 `ret_form=20` 且 `call_depth_after` 变大 | 调用传的是对的，返回值在 `CD_RETURN`/`return_from_scene` 丢失 | 返回值编组（§16.2） |
+| `recent_cmds=` 末尾那条的 `ret_form=20` 且 `call_depth_after` 变大 | 调用传的是对的，返回值在 `CD_RETURN`/`return_from_scene` 丢失 | 返回值编组（§16.2） |
 | 该条 `ret_form` 不是 20（很可能是 0 或 23） | 调用**携带的**返回形式就错了 | `CD_COMMAND` 解码 或 调用入口传参 |
-| 没有该条命令 / `elm` 与源码对不上 | 命令索引或 element 解码错 | 命令索引解析 |
+| `recent_cmds` 里找不到该 pc 的命令 / `elm` 与源码对不上 | 命令索引或 element 解码错 | 命令索引解析 |
 
 > 另外：`[ENGINE_HALT]` 的 `callstack=` 字段请一并保留，它与探针互为交叉验证。
