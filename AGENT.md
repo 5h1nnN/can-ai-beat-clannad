@@ -959,3 +959,94 @@ STATE 里 `halted=true`、`scene=_system_language line=-1`（这是**停机后�
 - 本会话此前的行为改动均已 revert（含 `1896907`（load reprepare 放宽）与 `f56bb4a`（load 后模拟点击），
   后者会把居中的选项列表误选，是"选择恒第一项"的直接原因）；
 - **load 到有选项处选项不立刻出现** —— 按用户意见**暂时搁置**。
+
+---
+
+## 19.15 CD_COMMAND 探针已落地（2026-09-14）+ 从旧日志里挖到的关键新证据
+
+### 已完成的动作（提交 `8abd7e9`，`siglus_rs`）
+
+在 `vm.rs` 真正的 `CD_COMMAND` **派发体**（不是 `vm_opcode_name` 名字表）里，
+`self.exec_command(...)` 前后加了只读探针，写入 `engine_halt.log`：
+
+```
+[ENGINE_CMD] seq=.. scene=.. scene_no=.. line=.. pc=0x.. elm=[..] cmd_form_id=..
+             cmd_op_id=.. al_id=.. ret_form=.. argc=.. arg_forms=[..]
+             str_len_before=.. str_len_after=.. int_len_after=..
+             ctx_len_before=.. ctx_len_after=..
+             call_depth=.. call_depth_after=.. scene_no_after=.. result=..
+```
+
+- **门控**：只记录「带字符串实参」或「`ret_form == FM_STR`」的命令，上限 20000 条
+  （停机现场那条命令带一个字符串实参，**必然被记录**，同时避免每帧刷屏）；
+- `call_depth_after` / `scene_no_after` 用来看这条命令**是否进入了调用帧**（跨场景 include 调用会立刻返回，
+  返回值要等 `CD_RETURN` 才落地，只有这两个字段能区分）；
+- 行为代码零改动；release exe 已重建（`size=59206607`，`mtime=09/14 11:46:47`，无 `failed to remove`）。
+
+### 新证据（从 **09-13 23:39 那次有效运行**的 `engine_halt.log` 里读出来的）
+
+同一份日志里 `[ENGINE_HALT]` 那行的 `callstack=` 字段此前被忽略了，它其实**直接指名了调用帧**：
+
+```
+callstack=[#0ret=0x500/rf=10, #1ret=0x1073/rf=10, #2ret=0x4d61/rf=10,
+           #3ret=0x3f585/rf=10, #4ret=0x20047/rf=0, #5ret=0x0/rf=0]
+scenes=[#0_system_title:552pc=0x4d61, #1seen0416:2066pc=0x3f585, #2seen6416:948pc=0x20047]
+```
+
+- `enter_*_user_cmd_*` 的做法是：先把 `caller.return_pc` / `caller.ret_form` 设成「本次调用的返回点与返回形式」，
+  再 push 被调帧。所以 **`#4` 就是发起停机现场那次调用的帧**；
+- 它 `ret=0x20047` —— 正是那条 `ASSIGN` 读完 12 字节操作数后的 pc，也是字符串栈下溢的 pc；
+- 但它的 **`rf=0`（`fm_void`）**，而 `ASSIGN` 的 `right_form=20`（`FM_STR`）明确要一个字符串。
+
+⇒ **调用方要字符串，但这次调用的 `ret_form` 是 `fm_void`，所以 `return_from_scene` 按 `_ => {}` 什么都不压**，
+`ASSIGN` 的 `pop_value_for_form(20)` 随即下溢。这与「`ctx_len=0`」也自洽（`fm_void` 分支会清空 `ctx.stack`）。
+
+### 同一窗口的逐字节解码（可复核，与探针互为交叉验证）
+
+`raw_tail64` 覆盖 `0x20007..0x20047`，按 `pc_before` 逐条对齐：
+
+| 地址 | 字节 | 指令 |
+|---|---|---|
+| `0x20011` | `08` | `ELM_POINT`（无内联操作数，从栈取） |
+| `0x20012` | `02 0a000000 6c000000` | `PUSH` form=10, value=**108** |
+| `0x2001b` | `02 14000000 00000000` | `PUSH` form=20（字符串实参） |
+| `0x20024` | `30` | `COMMAND`，操作数 `0x20025..0x20038` = `0`(al_id) `1`(argc) `20`(arg_form) `0` `23` |
+| `0x20039` | `05` | `PROPERTY` |
+| `0x2003a` | `20 17000000 14000000 01000000` | `ASSIGN` left=23 right=**20** al_id=1 → 正好结束于 `0x20047` |
+
+解码**完全自洽**（`ASSIGN` 结束地址 = 下溢 pc = 调用帧 `ret=0x20047`）。
+按现有代码的读取顺序（`al_id → arg_list → element(取栈) → named_arg_cnt → named_ids → ret_form`），
+最后那个 i32 = `23` 落在 **`ret_form`** 上；可是停机 dump 里调用帧的 `rf=0`。
+
+**这就是探针要解决的那个矛盾**，三种读法：
+
+1. 操作数末尾**真是** `ret_form`，而从读到 `caller.ret_form = ret_form` 之间存在清零/覆盖；
+2. `23` 属于**内联 element 的尾巴**，真正的 `ret_form = 0`；那么「要字符串」这件事本身
+   就没人负责（该由 element/属性那条路产出字符串）；
+3. 代码读取顺序与二进制布局不一致（`named_arg_cnt`/`ret_form` 位置错位）。
+
+### 倾向的修复方向（待探针确认后再动）
+
+停机现场的 `$cmd(...)` 是**跨场景 include 用户命令**，目标场景在两次运行中分别是
+`_system_language` 与 `_cl_forclannad`——都是「提供字符串的小工具命令」的场景。
+链路是 `exec_command → dispatch_owner_command → enter_resolved_user_command →
+enter_*_user_cmd_*(caller.ret_form = ret_form) → … → return_from_scene` 按 `caller.ret_form` 压栈。
+`enter_*` 两个入口本身写法正确（都设了 `caller.ret_form`），所以问题在**传进去的 `ret_form` 是不是调用方要的那个**
+（探针的 `ret_form` + `call_depth_after` + `scene_no_after` 三个字段即可判定）。
+
+### 需要用户配合的一次运行（探针已就绪）
+
+1. 关掉正在运行的 `siglus_engine`（窗口关掉 ≠ 进程退出，必要时重启机器清残留实例）；
+2. 删掉 `E:\7_projects\clannad_mcp\engine_halt.log` 与 `engine_state.log`；
+3. 用与之前完全相同的方式启动引擎，**从头 skip + 手选**复现停机；
+4. 把 `engine_halt.log` 发我。
+
+判读（三条互斥）：
+
+| 探针结果 | 结论 | 修复位置 |
+|---|---|---|
+| 停机附近那条 `[ENGINE_CMD]` 的 `ret_form=20` 且 `call_depth_after` 变大 | 调用传的是对的，返回值在 `CD_RETURN`/`return_from_scene` 丢失 | 返回值编组（§16.2） |
+| 该条 `ret_form` 不是 20（很可能是 0 或 23） | 调用**携带的**返回形式就错了 | `CD_COMMAND` 解码 或 调用入口传参 |
+| 没有该条命令 / `elm` 与源码对不上 | 命令索引或 element 解码错 | 命令索引解析 |
+
+> 另外：`[ENGINE_HALT]` 的 `callstack=` 字段请一并保留，它与探针互为交叉验证。
