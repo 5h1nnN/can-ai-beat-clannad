@@ -1064,3 +1064,81 @@ enter_*_user_cmd_*(caller.ret_form = ret_form) → … → return_from_scene` �
 | `recent_cmds` 里找不到该 pc 的命令 / `elm` 与源码对不上 | 命令索引或 element 解码错 | 命令索引解析 |
 
 > 另外：`[ENGINE_HALT]` 的 `callstack=` 字段请一并保留，它与探针互为交叉验证。
+
+---
+
+## 19.16 停机根因已定位并修复（2026-09-14）：`namae` 未实现 + `FM_STRREF` 被当成 Element
+
+### 环形探针抓到的现场（用户第三次运行，日志仅 2 行 / 12KB）
+
+`[ENGINE_STR_UNDERFLOW]` 的 `recent_cmds=` **最后一条**就是罪魁：
+
+```
+[ENGINE_CMD] scene=Some("seen6416") scene_no=Some(165) line=948 pc=0x20039
+             elm=[108] cmd_form_id=108 cmd_op_id=0 al_id=0 ret_form=23
+             argc=1 arg_forms=["str"]
+             str_len_before=0 str_len_after=0 int_len_after=22
+             ctx_len_before=0 ctx_len_after=0
+             call_depth=5 call_depth_after=5 scene_no_after=Some(165) result="Ok"
+```
+
+一次就够：`call_depth 5→5`、`scene_no_after` 同场景 ⇒ **这条命令根本没有进入任何调用帧**。
+
+### 关键更正：`23` 不是 Element，是 `FM_STRREF`
+
+- `runtime/forms/codes.rs:49` → `pub const FM_STRREF: i32 = 23;`
+- `siglus_script_compiler/src/compiler.rs:23` → `const FM_STRREF: i32 = 23;`，并且
+  `fn deref()`（同文件 1180-1188）明确写：`FM_STRREF => FM_STR`
+- 19.14 里写的「**23 = Element**」是**错的**，这个错误直接把我上一轮引向了
+  「include-call 返回值编组（§16.2）」——**19.15 的"倾向的修复方向"整段作废**
+  （本次停机**与 include 调用、与 `callstack #4 rf=0` 都无关**，那是个红鲱鱼）。
+
+### 完整因果链（每一环都在源码里指到行）
+
+1. `elm=[108]` + `arg_forms=["str"]` + `ret_form=23`：
+   `generated_definitions.rs:214` → `ElementDef { kind: Command, parent: "global",
+   form: "strref", name: "namae", code: 108, arg_spec: "0:str;" }`
+   —— 即脚本里的 **`namae("＊Ａ")`**，返回 **strref**。
+   反查反编译产物，`seen6416.ss` 的 `// line 948`（文件 1667 行）正是：
+   `__missing_elm_point(stack_len=643) = s[0].namae("＊Ａ") /* ret=strref */ /* al_id=0 */;`
+   —— 与探针逐字段吻合。
+2. **`namae`（全局命令 108）在 VM 里根本没有实现**：`GLOBAL_NAMAE` 只出现在
+   `forms/codes.rs`/`runtime/constants.rs` 的**定义**处，没有任何 handler 引用它。
+   ⇒ `runtime::dispatch_form_code(ctx, 108, args)` 返回 **false**。
+3. 落到「未实现 form 保命回退」（`vm.rs` FORM 分支，原 7978-7986 行）：
+   它只认 int/label 与 str，**其余一律 `ctx.push(Value::Element(Vec::new()))`**
+   ⇒ `ret_form=23` 被推成了**元素**。
+4. `take_ctx_return(23)` 没有 strref 分支 ⇒ 落进 `_ =>` 兜底
+   `Some(Value::Element(elm)) => self.push_element(elm)` ⇒ 值被压到**元素栈**，
+   而且**返回 Ok**（这正是探针里 `result="Ok"` 的原因，也是为什么之前一直看不到报错）。
+5. 紧接着的 `ASSIGN`（`right_form=20 = FM_STR`）执行 `pop_value_for_form(20)` → `pop_str()`
+   ⇒ 字符串栈为空 ⇒ `[ENGINE_STR_UNDERFLOW]` ⇒ `halt_reason=handler_err_fatal_noretry` ⇒ 停机。
+
+一句话：**「声明返回 strref 的命令」的返回值被塞进了元素栈，而调用方按字符串去取。**
+
+### 修复（`siglus_rs`）
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `vm.rs` `exec_builtin_global_control` | 增加 `args: &[Value]` 参数 + `GLOBAL_NAMAE` 分支：用 `args[0]` 查名字表，`ctx.push(Value::Str(display))`（只有一个调用点，已同步） |
+| 2 | `runtime/forms/stage.rs` | 新增 `pub(crate) fn gameexe_namae_display()` = 复用既有 `resolve_gameexe_namae(...).display`（stage.rs 渲染人名本来就用它） |
+| 3 | `vm.rs` `take_ctx_return` | 新增 `FM_STRREF` 分支，按**字符串**编组（对齐 `compiler::deref` 与 `excall::push_default` 的既有语义） |
+| 4 | `vm.rs` 未实现 form 回退 | `FM_STRREF` 也走 `Value::Str(String::new())`，不再推 `Element` |
+| 5 | `vm.rs` `push_default_for_ret` | `FM_STRREF` 归入 str 分支（压空串） |
+| 6 | `vm.rs` `return_from_scene` / `exec_return` | `FM_STRREF` 与 `FM_STR` 同等处理（跨场景/include 命令声明 strref 返回时不再丢值） |
+
+`excall.rs:207-215` 早就写着 `ret_form == FM_STR || ret_form == FM_STRREF → ctx.push(Value::Str(...))`
+—— 本次修复只是把 VM 主路径补齐到同一语义。
+
+### 验证要点（下次运行）
+
+- **不应**再出现 `[ENGINE_STR_UNDERFLOW]` / `[ENGINE_HALT]`；
+- stderr 里的 `[warn] unhandled form command chain [108], skipping` **应消失**
+  （说明 `namae` 现在真的被派发了，而不是走保命回退）；
+- 环形探针保留（只读），若还有别的停机可继续用 `recent_cmds=` 一眼定位。
+
+### 待确认的语义细节（不影响是否停机）
+
+`namae` 的取值来源我按 gameexe 的 `#NAMAE` 表（`tables.namae_entries` → `resolve_gameexe_namae`）
+实现，与 stage.rs 渲染人名同源。若运行中发现**人名/名牌文本不对**，说明它应当改读
+`namae_global`/`namae_local` 字符串列表（`syscom.rs` 里那两张表），届时按现象再调。
