@@ -1493,3 +1493,55 @@ exec_property → dispatch_global_indexed_list_property_direct (vm.rs:7022)
 （`clannad_probe --scene seen6416 --frames 40000 --click --click-every 12`）跑一遍，
 看 `[107, elm_array, 0]` 到底落在哪条分支，再决定「补编组」还是「改引用形状」。
 **这一步不需要用户参与，也不会改变行为。**
+
+### 决定性证据：`try_parent_slot_property` 截胡（2026-09-15，`SIGLUS_TRACE_VM`，零代码改动）
+
+用现成环境变量跑同一个 4 分钟无头复现即可（**不用改代码**）：
+
+```
+SIGLUS_TRACE_VM=1  SIGLUS_TRACE_VM_SCENE=seen6416  SIGLUS_TRACE_VM_PC=0x20290..0x202b0
+clannad_probe --project <游戏根> --scene seen6416 --frames 40000 --click --click-every 12
+```
+
+输出（`diagnostics/logs/probe_trace.log`）：
+
+```
+line=949 push_element [107, -1, 1] | int_len=6 str_len=0 elm_points=[0, 3] int_tail=[34, -1, 0, 107, -1, 1]
+line=949 pop_element -> [107, -1, 1]
+line=949 CD_PROPERTY elm=[107, -1, 1]
+line=949 exec_property enter elm=[107, -1, 1]
+line=949 exec_call_property elm=[107, -1, 1]
+line=949 exec_property handled by parent-slot elm=[107, -1, 1]      ★ 被 try_parent_slot_property 接走
+```
+
+**这修正了之前几轮的推测**：
+
+1. 真正送进 `CD_PROPERTY` 的链是 **`[107, -1, 1]`**，即
+   `namae_global[elm_array][1]` —— 它是**脚本自己**用 `ELM_POINT` 从 int 栈
+   （`int_tail=[34, -1, 0, 107, -1, 1]`）搭出来的，**不是 `namae` 的返回值**。
+   ⇒ 之前把责任归给「`namae` 的返回编码」是**错的**；改 `namae` 当然修不好这个点。
+2. **`ctx.ids.elm_array == -1`**（链里的 `-1` 就是它）。
+   ⇒ 任何构造/比较都必须用 `ctx.ids.elm_array`，用 `codes::ELM_ARRAY` 会错。
+3. 该链被 **`try_parent_slot_property` 截胡**（判定 `elm.len()==3 && elm[1]==ctx.ids.elm_array
+   && elm[2] > 0`，这里 `elm[2]=1 > 0` 成立）——**正是 19.18 早先标记的那个隐患，现在实锤了**。
+   它返回 `true` 却没往字符串栈压值 ⇒ 紧跟的 `ASSIGN`（`right_form=20`）`pop_str()` 下溢 ⇒ 停机。
+4. 为什么没走本该正确的 `dispatch_global_indexed_list_property_direct`？
+   该路径要求 `!is_current_object_child_tail(elm)`；此处被否决，于是落到
+   `try_parent_slot_property` 并被其接走。
+
+### 下一步（机械且可自测）
+
+修 `exec_property` 的分支争用：让**全局索引列表头**（`is_global_indexed_list_head(elm[0])`，
+即 25-32/137 与 34/35/106/107）不被 `try_parent_slot_property` 接走 ——
+最小改法是给 `try_parent_slot_property` 开头加守卫：
+
+```rust
+if self.is_global_indexed_list_head(elm[0]) { return false; }
+```
+
+（或把 `exec_property` 里 parent-slot 的判定挪到列表分支之后）。
+然后**用同一个 4 分钟无头复现重跑**，确认 `str_len` 增长、`halted=false`，
+并顺带跑一遍标题/新游戏路径；**全部通过后再交给用户**。
+
+> 注意：`exec_property` 泛型 FORM 分支最终怎么把值送到字符串栈还没读过 ——
+> 若加守卫后 `str_len` 仍为 0，说明还差那里的编组，继续用同一个复现器迭代即可。
