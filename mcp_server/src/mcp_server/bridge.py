@@ -169,6 +169,24 @@ class ClannadBridge:
             out.setdefault(key, value)
         return out
 
+    @staticmethod
+    def _attach_skip_dates(out: dict) -> dict:
+        """Derive `skip_dates` from the positioned dates inside `skip_lines`.
+
+        The engine stamps `date` on the first collected line and on every line where
+        the in-game date changed, so this compact list is the segment's day timeline
+        (index into `skip_lines` + the date at that point). Forward-fill from it to
+        label every line, which is what makes multi-day fast-forwards readable.
+        """
+        lines = out.get("skip_lines") or []
+        dates = []
+        for i, line in enumerate(lines):
+            if isinstance(line, dict) and isinstance(line.get("date"), dict):
+                dates.append({"index": i, **line["date"]})
+        if dates:
+            out["skip_dates"] = dates
+        return out
+
     def advance(self) -> dict:
         """Advance one dialogue step; return the state AFTER it advanced.
 
@@ -245,7 +263,7 @@ class ClannadBridge:
         if arrived(state):
             out = self._with_seen(state, seen)
             out["skip_timeout"] = False
-            return out
+            return self._attach_skip_dates(out)
 
         # Budget elapsed with the fast-forward still running: stop the engine and
         # return a normal snapshot. The engine keeps the partial segment, so
@@ -261,7 +279,7 @@ class ClannadBridge:
         out = self._with_seen(final or state, seen)
         out["skip_timeout"] = True
         out["skip_stopped"] = True
-        return out
+        return self._attach_skip_dates(out)
 
     def save(self, slot: int) -> dict:
         return self.send(f"SAVE:{int(slot)}")

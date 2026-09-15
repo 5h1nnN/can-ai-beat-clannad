@@ -110,6 +110,11 @@ def skip_to_choice() -> dict:
     - `skip_timeout=false`：正常到达选择点/停机；
     - `skip_timeout=true` 且 `skip_stopped=true`：快进超出预算（默认 60 秒），
       已**主动让引擎停止快进**并正常返回，此时的 `line`/`text` 是停止现场，可安全地再次调用 skip。
+
+    **游戏内日期**：`skip_dates` 给出本次快进跨过的日期及其**确切位置**——
+    每项是 `{"index": <skip_lines 下标>, "month","day","weekday","text"}`；
+    `skip_lines[i].date` 同时在"首行"和"日期发生变化的行"上标注，
+    因此从任一项向后填充即可给每一行标出所属日期（跨多天也会逐条给出）。
     """
     return get_bridge().skip()
 

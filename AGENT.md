@@ -1046,11 +1046,15 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 | 位置 | 行为 |
 |---|---|
 | 状态 JSON（`ctl_state_json`） | 新增 `date`（`{"month","day","weekday","text":"4月14日 星期一"}`），**只在变化附近出现**：变化后保留约 **1 秒（60 帧）**，避免客户端每 ~100ms 轮询漏掉"只发布一帧"的字段 |
-| `skip_lines[i]` | 该行**发生日期变化**时附带 `date`（与既有 `bgm_changed`/`background_changed` 同风格）⇒ 一次快进能报出它跨过的日子 |
-| `bridge.py` | `advance()` / `skip()` 会把轮询**中途**出现过的 `date` 并入最终返回（引擎只在变化时发布，最终状态可能已不带它）；`skip()` 停止路径同样合并 |
+| `skip_lines[i]` | **首行**与**每处日期变化所在的那一行**附带 `date`（与既有 `bgm_changed`/`background_changed` 同风格）⇒ 跨多天时**逐处定位**；从任一条向后填充即可给每行标出所属日期 |
+| `bridge.py` | `advance()` / `skip()` 会把轮询**中途**出现过的 `date` 并入最终返回（引擎只在变化时发布，最终状态可能已不带它）；`skip()` 停止路径同样合并。另从 `skip_lines` 派生便捷字段 **`skip_dates`**：`[{"index": <skip_lines 下标>, "month","day","weekday","text"}, …]` |
 
 **验证**（真实引擎 + 桥）：
 
 - `advance` 第 33 次报出 `4月14日 星期一`，**仅此一次**（序章无日期时不上报）✓；
 - 另一次快进中 `skip_lines[4]` 恰好一处带该日期 ✓；
-- 没有跨日的快进：`skip_lines` 无 `date`、顶层 `date` 也只在变化窗口内出现 ✓。
+- 没有跨日的快进：`skip_lines` 无 `date`、顶层 `date` 也只在变化窗口内出现 ✓
+- **跨多天定位**（连续 6 次 skip，经选择推进到 `seen3415`/`seen0415`/`seen4415`）：
+  每个分段的**首行**都带起始日期，`4月14日 → 4月15日` 的跨越落在 `skip_lines[15]`（确切行），
+  且 `skip_dates` 里每一项引用的 `skip_lines[i].date` 都确实存在（mismatches 为空）✓
+  ⇒ 跨 N 天时每处变化都会各自标在它发生的行上。
