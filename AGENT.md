@@ -1283,3 +1283,59 @@ ASSIGN@0x2003a   (left=23,right=20)     →  先弹字符串(rhs) ✓，再弹�
    —— 它能打印 `scene/line/blocked/name/text/choices`，其中 **`name` 就是名牌文本**，
    足以在**不打扰用户**的情况下验证：a) 不再停机；b) 名牌/名字槽内容正确；c) 标题→新游戏路径未回归。
    **教训：上一次就是没有自测就把改动交给用户，才把 New Game 弄坏。**
+
+### 离线取数结果（2026-09-15，已执行）
+
+新增**只读**工具（`siglus_ss_decompiler`，与游戏引擎无关）：
+`--scene-pck <pck> --scene NAME --list --project-dir <游戏根>` → 打印该场景的
+`namae_list` / 字符串表里的占位符 / `namae_list` 逐项解析。用仓库里的
+`diagnostics\clannad_test\Scene.pck`（与游戏同尺寸）即可离线跑，无需启动游戏。
+
+`seen6416`（停机现场）的结果：
+
+```
+namae_list_ofs=254285 namae_cnt=0          ← namae_list 是空的！
+namae_list=[]
+str_list_ofs=5460 str_cnt=666 str_index_cnt=666
+strings_total=666
+  s[0] = "＊Ａ"    s[1] = "＊Ｂ"    s[2] = "＊Ａ"    s[3] = "＊Ｂ"
+  s[4] = "＊Ａ"    s[5] = "＊Ｂ"    s[6] = "＊Ａ"    s[7] = "＊Ｂ"
+  s[8] = "％Ｂ"    s[10] = "％Ｆ"
+```
+
+⇒ **猜测 B 死了**：映射**不**来自场景头 `namae_list`（`namae_cnt=0`）。
+占位符本来就是**场景字符串表里的普通字符串**（`＊Ａ` 在 `s[0]`），`namae(x)` 的实参就是它。
+
+`siglus_scene_vm/src/vm.rs:11153-11165`：`namae_local`(106) 是**从存档**读出的
+`fixed_str_list`，按 `26 + 26*26 = 702` 条补齐；`namae_global`(107) 同样由
+`syscom.rs` 的存档读写覆盖。⇒ **两张表都是存档态的名字槽表**，702 = 26 + 26×26
+的构成强烈指向「字母索引」（1 个字母 → 0..25；2 个字母 → 26 + i*26 + j）。
+
+### 新发现的实现陷阱（差点又要踩，必须先解决）
+
+`exec_property` 的顺序是：`dispatch_global_indexed_list_property_direct` →
+**`try_parent_slot_property`** → compact-object → form 派发。
+而 `try_parent_slot_property`（`vm.rs:7437` 调用）的判定是：
+
+```rust
+if elm.len() != 3 || elm[1] != self.ctx.ids.elm_array || elm[2] <= 0 { return false; }
+```
+
+也就是说 `[ELM_GLOBAL_NAMAE_GLOBAL, ELM_ARRAY, index]` 在 **index > 0** 时会被**抢先**
+当成「父槽属性」，而不会走 `str_list::dispatch` 的槽位读取。
+
+⇒ **在确定 `namae` 返回的引用元素究竟该长什么样之前，不能实现**：
+用 `[107, ELM_ARRAY, i]` 会被截胡；改成别的形状又会落进
+`str_list_op::INIT / RESIZE / GET_SIZE / SETS` 这些「列表操作码」分支。
+这正是上一次翻车那一类问题（看起来合理、实际走错分支）。
+
+### 下一步（二选一，都需要先拿到编码证据）
+
+1. 在 VM 里找到 **既有的 `namae_global`/`namae_local` 读取路径**（`prop_access.rs` 里那两个
+   `str_lists` 访问点，`runtime/forms/prop_access.rs:129`、`:403`），看它期望的元素链形状，
+   据此确定引用编码；或
+2. 加一个**纯只读运行探针**：在 `namae` 走保命回退时把「元素栈 + 值栈 + 该场景字符串表里
+   占位符的索引」打出来（`return Ok(false)` 不变行为），一次运行即可看到原始引擎期望的形状。
+
+拿到编码后再实现，并且**先用 `clannad_probe` 无头自测**（`--scene seen6416 --click`），
+确认不再停机且标题→新游戏无回归，最后才交给用户。
