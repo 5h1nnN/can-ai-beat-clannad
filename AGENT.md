@@ -1574,3 +1574,31 @@ release exe 未被触碰（`size=59210618`）。守卫应与「948 路径的编�
    确认它用 `ctx.vm_call` 的 `ret_form` 还是 `push_return_value_raw`；
 3. 补上编组 + 恢复守卫，一起提交，用同一个复现器验证 `halted=false`，
    再跑一遍标题/新游戏路径，最后才交付。
+
+### 已读到 948 路径的关键代码（2026-09-15）
+
+`exec_property` 的**泛型 FORM 分支**（`vm.rs:7476-7500`）本身是**正确**的：
+
+```rust
+self.ctx.vm_call = Some(VmCallMeta { element: elm.clone(), al_id: 0,
+                                     ret_form: self.cfg.fm_int as i64 });   // ★ 写死 fm_int
+if !runtime::dispatch_form_code(&mut self.ctx, form_id, &args)? { … }
+if let Some(v) = self.ctx.pop() { self.push_return_value_raw(v); }           // Str → push_str ✓
+```
+
+`push_return_value_raw(Value::Str)` → `push_str` ✓（`vm.rs:12283`），所以**投递环节没问题**。
+
+⇒ 问题只能在**上游读出来的值形态**：如果 `107` 是由
+`prop_access::dispatch_stateful_form` → `store_or_push_indexed` 处理，
+那么它按 `ret_form` 决定读字符串表还是整数表
+（`prefers_string(ret_form, rhs)` → `ret_form_is_string(10)=false`），
+而这里 `vm_call.ret_form` 被**写死成 `fm_int`** ⇒ 会去读**整数表**并 `push(Value::Int)`
+⇒ `push_return_value_raw(Int)` → **整数栈** ⇒ 紧接着的 `ASSIGN`（`right_form=20`）`pop_str()` 下溢。
+
+**修复候选（下一轮验证）**：在泛型 FORM 分支里按元素类型给 `ret_form` 赋正确的形态 ——
+字符串类全局列表（`GLOBAL_STR_LIST_FORMS = [34,35,106,107]`）用 `cfg.fm_str`，其余用 `cfg.fm_int`；
+或确认 `opcode::dispatch_code` 对 107 应路由到 `str_list::dispatch`（它自己只读字符串表、
+不看 `ret_form`）而不是 `prop_access::dispatch_stateful_form`。
+
+> 还有一处待确认：`dispatch_form_code` 只是 `opcode::OpCode::form(form_id)` + `dispatch_code`，
+> 106/107 的具体路由在 `opcode` 模块里 —— 下一轮读它即可定论。
