@@ -1339,3 +1339,54 @@ if elm.len() != 3 || elm[1] != self.ctx.ids.elm_array || elm[2] <= 0 { return fa
 
 拿到编码后再实现，并且**先用 `clannad_probe` 无头自测**（`--scene seen6416 --click`），
 确认不再停机且标题→新游戏无回归，最后才交给用户。
+
+### 第 1 步执行结果（2026-09-15）：引用元素的标准形状已确认
+
+`runtime/forms/prop_access.rs` 里的**既有**通用路径给出了答案：
+
+```rust
+// dispatch_stateful_form  (prop_access.rs:425-449)  —— 读
+if chain.len() >= 3 && chain[1] == ctx.ids.elm_array {
+    let index = chain[2];
+    if chain.len() == 3 { store_or_push_indexed(ctx, form_id, index, chain_pos, args); }
+}
+// assign_to_chain        (prop_access.rs:488-494)  —— 写
+if chain.len() >= 3 && chain[1] == ctx.ids.elm_array { let raw_index = chain[2]; … }
+```
+
+而 `store_or_push_indexed`（`:310-363`）本身就同时支持**读与写**：
+
+- `al_id == Some(1)` → 把 `rhs`（`Value::Str`）写进 `str_list(ctx, form_id)[index]`，返回 `Value::Int(0)`；
+- 否则按 `ret_form`/`rhs` 偏好**推出** `Value::Str(槽位值)`。
+
+⇒ **索引列表元素的标准链形就是 `[form_id, ctx.ids.elm_array, index]`**，
+正好就是我原先猜的那个形状 —— 而且 `106/107` 已经是 `str_list` 体系里的定长（702）表，
+所以 `namae` 的引用**不需要新机制**：
+
+```rust
+// namae(x) → Value::Element([ELM_GLOBAL_NAMAE_GLOBAL, ctx.ids.elm_array, index])
+```
+
+lvalue（`namae("％Ａ") = "古河"`）走 `assign_to_chain` → 写槽位；
+rvalue（`seen6416:948` 的 `PROPERTY`）走 `dispatch_stateful_form` → 读槽位 → 字符串。两条都落在既有代码上。
+
+### 仍需在实现时处理/验证的两点
+
+1. **`try_parent_slot_property` 的截胡只发生在 `index > 0`**
+   （判定 `elm.len()==3 && elm[1]==ctx.ids.elm_array && elm[2] > 0`，见 `vm.rs:7437` 调用点）。
+   `index == 0`（即 `＊Ａ`）不会被截胡；`index > 0` 时必须确认它最终仍 `return false`
+   而落到 `dispatch_form_code`。**这一条必须在实现后用 `clannad_probe` 实测确认**，
+   不能靠读代码下结论 —— 这正是上次翻车的那类问题。
+2. **用 `namae_local`(106) 还是 `namae_global`(107)**：两者都是 702 条、都由存档读写
+   （`vm.rs:11153-11165` 读 `namae_local`；`syscom.rs` 读写 `namae_global`）。
+   `namae` 是 global 命令，暂定 **107（global）**；由于当前 VM 里**没有任何显示路径读这两张表**
+   （占位符替换尚未实现），选错只影响「槽里存了什么」，**不影响是否停机**；
+   若将来名牌/正文名字不对，改成 106 即可。
+
+### 索引规则（字母 → 槽位）
+
+已排除 `namae_list`（`seen6416` 的 `namae_cnt=0`）。剩下的候选按 702 = 26 + 26×26：
+占位符里的全角字母 1 个 → `i`（0..25）；2 个 → `26 + i*26 + j`。
+`＊Ａ`/`％Ａ` → 0、`％Ｃ` → 2、`％Ｅ` → 4、`＊Ｂ`/`％Ｂ` → 1、`％Ｆ` → 5。
+⇒ 标记字符（＊ / ％）**不参与索引**，只有字母参与（这也是「写 `％Ａ`、读 `＊Ａ` 能对上」的前提）。
+该规则若错，退化为读到空串（不崩），可由 `clannad_probe` 的 `name` 字段观察。
