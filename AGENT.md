@@ -1545,3 +1545,32 @@ if self.is_global_indexed_list_head(elm[0]) { return false; }
 
 > 注意：`exec_property` 泛型 FORM 分支最终怎么把值送到字符串栈还没读过 ——
 > 若加守卫后 `str_len` 仍为 0，说明还差那里的编组，继续用同一个复现器迭代即可。
+
+### 守卫已试：失败点移动但未修好（2026-09-15）
+
+按上面的最小改法给 `try_parent_slot_property` 加了守卫
+（`if elm.first().copied().is_some_and(|h| self.is_global_indexed_list_head(h)) { return false; }`），
+用**同一个 4 分钟复现**重跑：
+
+| | 停机位置 |
+|---|---|
+| 加守卫前 | `scene=seen6416 line=949 pc=0x202aa` |
+| **加守卫后** | `scene=seen6416 line=948 **pc=0x20047**` ← 正是用户最早报告的那个地址 |
+
+⇒ **守卫本身是对的**（parent-slot 不该接列表元素，`949/0x202aa` 那条确实被它放过去了），
+但**不足以修好**：`948/0x20047` 那条链仍然拿不到字符串 —— 指向**此前标记为「还没读过」的
+`exec_property` 泛型 FORM 分支的编组**（索引 0 的链不会被 parent-slot 接走，会落到那里）。
+
+**处置**：该守卫是**未提交的工作区改动，已撤下** —— 引擎保持在确认可玩的 `962bdaa`，
+release exe 未被触碰（`size=59210618`）。守卫应与「948 路径的编组修复」**一起**提交，
+并作为一个整体用同一个复现器自测通过后再交付。
+
+### 下一步的具体动作（一次 4 分钟运行 + 一次阅读）
+
+1. 用同样的环境变量但把窗口挪到 948 那条链：
+   `SIGLUS_TRACE_VM=1 SIGLUS_TRACE_VM_SCENE=seen6416 SIGLUS_TRACE_VM_PC=0x20020..0x20060`
+   —— 看 `[107, …]` 那条链走了哪条分支（预计是泛型 FORM 分支 / compact 分支）；
+2. 读 `exec_property` 里**泛型 FORM 分支的收尾编组**（`vm.rs:7458` 之后到函数结尾），
+   确认它用 `ctx.vm_call` 的 `ret_form` 还是 `push_return_value_raw`；
+3. 补上编组 + 恢复守卫，一起提交，用同一个复现器验证 `halted=false`，
+   再跑一遍标题/新游戏路径，最后才交付。
