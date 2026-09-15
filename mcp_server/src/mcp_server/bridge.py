@@ -85,7 +85,8 @@ class ClannadBridge:
     #: How long `skip()` may fast-forward before it stops the engine and returns
     #: normally (AGENT.md 19.30). Bounded so it stays inside the MCP client's own
     #: timeout, and so an abandoned skip never leaves the game running away.
-    SKIP_TIMEOUT = float(os.environ.get("CLANNAD_SKIP_TIMEOUT", "25"))
+    #: Override with `CLANNAD_SKIP_TIMEOUT` (seconds) if a route needs longer.
+    SKIP_TIMEOUT = float(os.environ.get("CLANNAD_SKIP_TIMEOUT", "60"))
 
     def __init__(self, host: str = "127.0.0.1", port: int | None = None) -> None:
         self.host = host
@@ -173,7 +174,7 @@ class ClannadBridge:
 
         return self._poll_state(resolved)
 
-    def skip(self, timeout: float | None = None) -> dict:
+    def skip(self) -> dict:
         """Fast-forward to the next choice; return the whole fast-forwarded segment.
 
         `skip_lines` holds every dialogue line collected during the fast-forward
@@ -186,11 +187,12 @@ class ClannadBridge:
         (`STOPSKIP`) and return a normal snapshot with `"skip_timeout": true` and the
         partial `skip_lines`, so the state stays consistent and a later skip works.
 
-        Override the budget with the `CLANNAD_SKIP_TIMEOUT` env var (seconds).
+        The budget defaults to 60s; override it with the `CLANNAD_SKIP_TIMEOUT` env
+        var (seconds).
         """
         import time
 
-        budget = self.SKIP_TIMEOUT if timeout is None else float(timeout)
+        budget = self.SKIP_TIMEOUT
         self.send("SKIP")
         started = time.monotonic()
         saw_active = False

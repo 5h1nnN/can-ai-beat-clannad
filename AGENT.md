@@ -1017,8 +1017,8 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 | 侧 | 改动 |
 |---|---|
 | 引擎 `siglus_engine.rs` | 新增桥命令 **`STOPSKIP`** → `stop_skip()`：停止快进、把已收集的片段留在 `skip_segment`（由 `ctl_state_json` 作为 `skip_lines` 发布），因此停止后的回复是**普通状态快照**；状态 JSON 新增 **`skip_active`** |
-| `bridge.py` | `skip(timeout=None)`：预算默认 **25s**（环境变量 `CLANNAD_SKIP_TIMEOUT` 可调）；**以 `skip_active` 归零为到达信号**（`choices` 只在"从未见到快进启动"时作为兜底，且需 1.5s 宽限）；预算用尽 ⇒ 发 `STOPSKIP` ⇒ 返回 `skip_timeout=true` / `skip_stopped=true` + 部分 `skip_lines`；
-| `clannad_mcp.py` | `skip_to_choice(timeout=None)` 可传预算，并在 docstring 说明两种返回 |
+| `bridge.py` | `skip(timeout=None)`：预算默认 **60s**（环境变量 `CLANNAD_SKIP_TIMEOUT` 可调）；**以 `skip_active` 归零为到达信号**（`choices` 只在"从未见到快进启动"时作为兜底，且需 1.5s 宽限）；预算用尽 ⇒ 发 `STOPSKIP` ⇒ 返回 `skip_timeout=true` / `skip_stopped=true` + 部分 `skip_lines`；
+| `clannad_mcp.py` | `skip_to_choice()`（**无参数**，固定使用默认预算）；docstring 说明两种返回 |
 
 **端到端验证**（真实引擎 + 桥，`--bridge --auto-start`）：
 
@@ -1026,6 +1026,9 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 |---|---|
 | 4s（超时路径） | 4.1s 返回 `skip_timeout=true / skip_stopped=true`；随后 STATE `skip_active=false`（**确实停了**）；再 skip 正常（67 行）✓ |
 | 60s（到达路径） | 16.0s **正常到达选择点**（`seen0414:697`，193 行，`skip_timeout=false`）；再 skip 1.7s 返回 ✓ |
+| **默认预算、无参数**（最终形态） | `budget=60s`：23.6s 到达选择点（259 行）；再 skip 1.9s；两次之后 STATE 均 `skip_active=false` ✓ |
 
 ⇒ 现在「超时正常返回 + 游戏停止快进 + 可安全多次 skip」都成立；也不再依赖"延长 timeout"。
+（按用户要求，`skip()` / `skip_to_choice()` **去掉了 `timeout` 参数**，固定使用默认 60s 预算；
+要临时改预算就设环境变量 `CLANNAD_SKIP_TIMEOUT`。）
 `skip_active` 同时让 MCP 侧与人工排查都能直接看出快进是否还在跑。
