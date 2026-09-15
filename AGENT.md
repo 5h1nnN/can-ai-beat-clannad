@@ -1875,3 +1875,62 @@ clannad_ctl --project <游戏根> --scene seen0414 --load-slot 0 --skip-to-choic
   读档复现为 `steps=192 / cd_none / 1 站点` ✓（即本处未修，其余已修）；
 - 我测试时建的槽位 3 存档已删除，用户原有 `0000/0001/0002.sav` 未改动（另有备份在
   `diagnostics\save_backup_2026-09-15\`）。
+
+---
+
+## 19.29 读档失步**已修复**（2026-09-15）：调用方帧被贴错场景标签 + 读档后重建场景边界
+
+### 真正的根因（比 19.28 更精确）
+
+`SIGLUS_TRACE_CALL_RETURN_PC=1` 的第一行就说清了：
+
+```
+[SG_CALL_PC] cross-scene farcall set depth=1 target_scene=203 return_pc=0x298 old=0x0
+```
+
+`0x298` 是**开场 farcall 进入 seen6900(203) 时**记在**调用方帧**上的 pc——那个帧属于**外层场景**
+（seen0414）。但帧的场景标签却是 203，因为：
+
+1. **场景进入路径先把 `current_scene_no` 切成目标场景，再创建/标记帧**
+   ⇒ 调用方帧被贴上**被调场景**的标签；
+2. **存档写入端给每一帧都写"当前场景"**（所有帧同值），读取端又**丢弃**这个字段
+   （`let _scn_name = rd.string()?`）；
+3. `scene_stack` **完全不进存档**。
+
+⇒ 三者叠加：读档后「调用方帧的场景归属」彻底丢失，场景级返回时既没有边界记录、
+又不知道 pc 属于哪个场景，于是走同场景路径 `exec_return`，把**外层场景的 pc 用到当前场景**
+⇒ 解码失步 ⇒ `cd_none`。
+
+### 修复（三处，互相配合）
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 两处跨场景进入（user-cmd / farcall） | `caller.scene_no = self.current_scene_no;`（在切换场景**之前**记录）⇒ 调用方帧带上**它自己**的场景 |
+| 2 | `write_cpp_call_frame` / `read_cpp_call_frame` | 写入**帧自己的**场景名；读取时解析成 `scene_no`（新存档即可携带"每帧属于哪个场景"） |
+| 3 | `rebuild_scene_boundary_for_pending_return()` | 读档会话中，若场景栈为空、且调用方 pc 在**当前流**里不像指令、但在**它自己场景**里像指令 ⇒ 从场景缓存取回该场景的流，补一个 `SceneExecFrame`，让返回走 `return_from_scene` |
+
+**关键的安全性设计**：重建**只在读档会话**生效（`POST_LOAD_RETURN_BOUNDARY_PENDING`，
+在 `drain_runtime_save_load_requests()` 里**读档完成之后**置位；`jump_to_scene_name` 会清掉它）。
+这一点是必须的——前一版只判断"场景栈为空"，而 `seen6416` 回放里 `jump_to_scene_name` 也会清空场景栈，
+于是重建被误触发并**导致回归**（`_system_language:350 pc=0x2306` 下溢）。
+
+另有一个**旧存档兜底**：`infer_scene_for_pc()` —— 若帧标签无信息量（等于当前场景），
+就在 Scene.pck 里找「该 pc 唯一合法」的场景；**不唯一就不猜**（返回 false，退回容错）。
+
+### 验证（两项都通过）
+
+| 检查 | 结果 |
+|---|---|
+| `clannad_ctl --scene seen0414 --load-slot 3 --advance-every 6 --frames 3000`（新存档） | 从 `seen6900 line=51` 起，**回到 `seen0414` 并推进到 line 200**；清单只有 1 条：`scene_boundary_rebuilt caller_scene=17 (seen0414) current_scene=seen6900 depth=2 ret_pc=0x298` ✓ |
+| `--load-slot 3 --skip-to-choice --frames 20000` | **不再停机**（无 `cd_none`、无下溢）✓ |
+| **回归门槛**：`clannad_probe --scene seen6416 --frames 40000 --click --click-every 12` | **不产生 `engine_halt.log`** ✓，`line=1673 halted=true`（探针单场景启动的 `return_at_root_frame` 假象）✓ |
+| 用户旧存档 slot 1 / slot 2 | 读档 + skip 6000 帧**无停机** ✓ |
+| 用户旧存档 slot 0 | **仍会停**（旧存档的帧标签无信息量，且 `0x298` 在多个场景里都"像指令"，按设计不猜）——这是旧存档的固有限制，用新构建**另存**一次即可 |
+
+### 结论与后续
+
+- **读档回开头再 skip 的停机：已修复**（新存档路径 + 本复现）；
+- 旧存档（本改动之前写的）：slot 1/2 可用，slot 0 仍会停——建议在新构建里从 slot 1/2 继续
+  并另存，或直接开新游戏；
+- 至此三类停机都已处理：A 类（处理器 Err，已修 + 容错）、B 类（PC 失步，含本处读档失步，已修
+  + 容错）、C 类（结构性，探针假象）。
