@@ -1754,3 +1754,47 @@ save_count=100, save_used=3, save_slots[0..2].exist=true
 ⇒ **下一步**：抓引擎实例的日志/控制台输出里那行 `desktop messagebox creation failed`，
 确认是 `create_window` 还是第二个 wgpu `Renderer` 初始化失败；若是后者，
 第二窗口不该再建独立 renderer（可复用主 renderer 或在游戏内绘制该 modal）。
+
+---
+
+## 19.21 容错 + 记账：把「一次测试修一处」变成「一次游玩出一张清单」（2026-09-15）
+
+### 背景（用户的正确疑问）
+
+用户问：不同停机原因不同，能不能一起修？整个游戏是不是还有很多处、修不完？
+
+事实：所有停机只落在 `vm.rs` 的 **8 个 `halted = true` 点**上，而造成用户三次停机的都是
+**同一类**（`handler_err_fatal` / `handler_err_fatal_noretry`：某个指令处理器返回 `Err`）。
+但「一遇错就整个 VM 停住」的策略意味着**每修一处都要用户重跑一次**，无法收敛。
+
+### 实现（默认开启；`SIGLUS_VM_STRICT=1` 恢复旧的致命行为）
+
+**关键改动只有两处 Err 分支 + 一个进程级账本**（不加结构体字段，避免动 5+ 个构造函数）：
+
+| 位置 | 改动 |
+|---|---|
+| `vm.rs` `step()` 的 `Err` 分支 | 先 `try_recover_handler_error()`，成功则返回 `Ok(true)` 继续 |
+| `vm.rs` `run_script_proc_continue()` 的 `Err` 分支 | 同上，成功则 `continue` 继续 `loop` |
+| `vm.rs` 模块级 | `RECOVERED_SITES`（去重+计数，上限 200 条）、`RECOVERED_TOTAL`、`recovered_report_json()` |
+| `siglus_engine.rs` STATE | 追加 `"recovered":{...}` |
+| `clannad_ctl.rs` JSON | 同上（供我无头自测看清单） |
+| `mcp_server` | 新增工具 **`get_recovered()`**（返回 `{total, sites:[{count,site}]}`） |
+
+容错动作：
+1. 记录 `scene/line/pc/opcode/错误文本`（去重计数）；
+2. 按错误类别补默认值，避免**级联**：
+   `str stack underflow` → 压空串；`int stack underflow` → 压 0；`elm/element stack underflow` → 压空元素；
+3. 同一站点重复 **> 1000 次**则交回致命路径（防止解码失步导致死循环）。
+
+### 已验证
+
+- release 构建通过（`size=59246900`、`mtime=09/15 15:33:52`，无 `failed to remove`）；
+- `clannad_ctl` 输出里清单字段可见：`"recovered":{"total":0,"sites":[]}`；
+- 已修的两处（948/949）仍不产生任何错误记录。
+
+### 待做
+
+- 用 `clannad_ctl --save-at-frame N --slot N --verify-sl` 自己复现「读档回开头再 skip」那处停机，
+  看容错是否让它继续、清单记到了什么；
+- 用户**重启 MCP server** 后即可用 `get_recovered()` 抓整份清单；
+- 之后按清单里 `count` 从高到低批量修。

@@ -75,6 +75,22 @@ def get_save_list() -> dict:
 
 
 @mcp.tool()
+def get_recovered() -> dict:
+    """读取 VM 的「容错清单」：本次运行中被容错跳过的脚本错误站点。
+
+    返回 {"total": N, "sites": [{"count": k, "site": "scene=.. line=.. pc=0x.. opcode=.. err=.."}, ...]}。
+    total 为累计发生次数，sites 为去重后的站点（含各自次数），最多 200 条。
+    未实现/解码不合的命令都会记在这里而不再让游戏停机；
+    想恢复「一遇错就停」的旧行为，给引擎进程设置环境变量 SIGLUS_VM_STRICT=1。
+    """
+    st = _snapshot()
+    rec = st.get("recovered")
+    if isinstance(rec, dict):
+        return rec
+    return {"total": 0, "sites": []}
+
+
+@mcp.tool()
 def advance() -> dict:
     """推进对话（注入一次 Enter / 确认键）。返回推进后的状态。"""
     return get_bridge().advance()
