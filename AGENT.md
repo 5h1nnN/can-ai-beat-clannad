@@ -1460,3 +1460,36 @@ ring 末条: [ENGINE_CMD] line=949 pc=0x2029c elm=[108] cmd_form_id=108 ret_form
 再决定「补编组」还是「改引用形状」。
 
 > 自测的价值在这里兑现了：这次**没有**把未验证的改动交给你 —— 游戏始终保持在你确认可玩的构建上。
+
+### 继续追 `exec_property`（2026-09-15，静态结论）
+
+关键常量查清：`GLOBAL_STR_LIST_FORMS = [34, 35, 106, 107]`（`forms/codes.rs:4820`）
+⇒ **`107` 确实在「global indexed list」集合里**，`is_global_indexed_list_head(107) = true`，
+`is_global_indexed_list_chain([107, elm_array, 0]) = true`。
+
+而该路径看起来是**能工作**的：
+
+```
+exec_property → dispatch_global_indexed_list_property_direct (vm.rs:7022)
+   vm_call = { element: elm, al_id: 0, ret_form: cfg.fm_int }
+   → dispatch_form_code(107) → str_list::dispatch
+        chain.len()==3 && chain[1]==elm_array && al_id==0
+        → ctx.push(Value::Str(槽位值))            // str_list.rs:218-219
+   → if let Some(v) = ctx.pop() { push_return_value_raw(v) }   // vm.rs:7037-7038
+        Value::Str => self.push_str(s)             // vm.rs:12283  ✓ 应进字符串栈
+```
+
+⇒ **理论上应该成功，但实测 `str_len=0`**。所以 `[107, elm_array, slot]` **没有走成这条路**。
+两个候选入口在它**之前**：
+
+1. `exec_call_property(&elm)`（`vm.rs:7364`，最先）—— 对 `[107, …]` 可能返回 true 并自行处理；
+2. `global_indexed_list_must_dispatch_direct` 要求 `!is_current_object_child_tail(elm)`
+   —— 若当时存在 `current_object_chain`，该条件为假 ⇒ 跳过直派，
+   落到**泛型 FORM 分支**；而那里 `ctx.vm_call` 未设置 ⇒ `take_ctx_return(ret_form)` 取到
+   `fm_void` ⇒ **什么都不压**（与观测一致）。
+
+**下一步（一次运行即可定案）**：在 `exec_property` 里加**只读**探针（仅当 `elm[0]` 是 106/107 时打印
+`elm / 走了哪个分支 / 前后 ctx.stack、str_stack、int_stack 长度`），用已有的 4 分钟无头复现
+（`clannad_probe --scene seen6416 --frames 40000 --click --click-every 12`）跑一遍，
+看 `[107, elm_array, 0]` 到底落在哪条分支，再决定「补编组」还是「改引用形状」。
+**这一步不需要用户参与，也不会改变行为。**
