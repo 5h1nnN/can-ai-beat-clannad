@@ -1058,3 +1058,35 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
   每个分段的**首行**都带起始日期，`4月14日 → 4月15日` 的跨越落在 `skip_lines[15]`（确切行），
   且 `skip_dates` 里每一项引用的 `skip_lines[i].date` 都确实存在（mismatches 为空）✓
   ⇒ 跨 N 天时每处变化都会各自标在它发生的行上。
+
+---
+
+## 19.32 skip 停止时机改由**引擎**掌握（2026-09-15）
+
+**用户实测反馈**：`skip` 仍会"无法正确返回"，且**游戏快进停止略迟于 timeout**。
+
+**根因（时序）**：停止完全依赖客户端——`skip()` 先等自己的预算（60s）用尽，**再**发 `STOPSKIP`、
+等引擎在下一帧处理完才真正停下。于是"停止时刻 = 预算 + 往返 + 一帧"，必然比调用方的 timeout 晚一截；
+若调用方（MCP host）超时更早，则连回复都拿不到。
+
+**改动**：
+
+| 侧 | 改动 |
+|---|---|
+| 引擎 | 新增**墙钟预算** `skip_deadline`（`CLANNAD_SKIP_BUDGET_MS`，默认 **60s**）：`start_skip` 时布防，`pump_skip` 每轮检查，**到点立刻自停**（理由 `time_budget`）并照常发布已收集片段；步数上限停止记为 `step_budget` |
+| 引擎 | 状态 JSON 新增 **`skip_stop_reason`**：`choice`（到达选择点）/`halted`（停机）/`time_budget`、`step_budget`（预算用尽）/`requested`（客户端要求停止） |
+| `bridge.py` | `skip()` 只需等引擎自停：读 `skip_stop_reason` 判定——`choice`/`halted` ⇒ `skip_timeout=false`；`time_budget`/`step_budget` ⇒ `skip_timeout=true`。客户端预算降级为**兜底**（`CLANNAD_SKIP_TIMEOUT`，默认 70s，只用于引擎没停的异常情况） |
+
+**验证**（真实引擎 + 桥，把引擎预算设成 8s 以便快速测量）：
+
+```
+SKIP1: elapsed=8.4s（引擎预算 8s） skip_timeout=True skip_stopped=True reason=time_budget after_skip_active=False
+SKIP2: elapsed=8.3s（引擎预算 8s） skip_timeout=True skip_stopped=True reason=time_budget after_skip_active=False
+RESULT: PASS
+```
+
+⇒ 停止落在**预算 + 0.3~0.4s**（一个轮询周期），不再有"往返 + 帧"的额外滞后；
+调用返回时 `skip_active` 必为 `false`。
+
+> **环境提醒**：引擎预算必须**明显低于** MCP 客户端自身的超时。若客户端超时是 60s，
+> 用 `CLANNAD_SKIP_BUDGET_MS=45000` 启动引擎，回复就会在 ~45.4s 返回，留出安全余量。

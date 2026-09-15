@@ -107,9 +107,9 @@ def skip_to_choice() -> dict:
     """快进到下一个选择点（跳过中间对白）。返回到达选择点时的状态。
 
     返回里带 `skip_lines`（本次快进收集到的全部对白）以及：
-    - `skip_timeout=false`：正常到达选择点/停机；
-    - `skip_timeout=true` 且 `skip_stopped=true`：快进超出预算（默认 60 秒），
-      已**主动让引擎停止快进**并正常返回，此时的 `line`/`text` 是停止现场，可安全地再次调用 skip。
+    - `skip_stop_reason`：快进为什么停 —— `choice`（到达选择点）/`halted`（停机）/
+      `time_budget`、`step_budget`（引擎自身预算用尽）/`requested`（客户端要求停止）；
+    - `skip_timeout=true` 表示**不是**正常到达，而是预算用尽后被停止（此时可安全地再次调用 skip）。
 
     **游戏内日期**：`skip_dates` 给出本次快进跨过的日期及其**确切位置**——
     每项是 `{"index": <skip_lines 下标>, "month","day","weekday","text"}`；

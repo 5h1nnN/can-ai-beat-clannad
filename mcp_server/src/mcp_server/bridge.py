@@ -82,11 +82,14 @@ def _read_port(timeout: float = 30.0) -> int:
 class ClannadBridge:
     """A tiny blocking client for one logical request/reply at a time."""
 
-    #: How long `skip()` may fast-forward before it stops the engine and returns
-    #: normally (AGENT.md 19.30). Bounded so it stays inside the MCP client's own
-    #: timeout, and so an abandoned skip never leaves the game running away.
-    #: Override with `CLANNAD_SKIP_TIMEOUT` (seconds) if a route needs longer.
-    SKIP_TIMEOUT = float(os.environ.get("CLANNAD_SKIP_TIMEOUT", "60"))
+    #: Fallback budget: how long the client waits for the ENGINE's own fast-forward
+    #: budget to end before it gives up and asks the engine to stop (`STOPSKIP`).
+    #:
+    #: The engine enforces its own budget (`CLANNAD_SKIP_BUDGET_MS`, default 60s) and
+    #: stops exactly when it elapses — that is what makes the game stop AT the budget
+    #: instead of one round trip later (AGENT.md 19.32). Keep this above the engine
+    #: budget, and keep the engine budget comfortably below the MCP client's timeout.
+    SKIP_TIMEOUT = float(os.environ.get("CLANNAD_SKIP_TIMEOUT", "70"))
 
     def __init__(self, host: str = "127.0.0.1", port: int | None = None) -> None:
         self.host = host
@@ -262,7 +265,13 @@ class ClannadBridge:
         state = self._poll_state(arrived, timeout=budget, interval=0.15, seen=seen)
         if arrived(state):
             out = self._with_seen(state, seen)
-            out["skip_timeout"] = False
+            reason = out.get("skip_stop_reason")
+            # The ENGINE ended the skip: "choice"/"halted" is a real arrival, while
+            # "time_budget"/"step_budget" means its own budget ran out (the caller
+            # asked for fast-forward, not for an arrival).
+            out["skip_timeout"] = reason in ("time_budget", "step_budget")
+            if out["skip_timeout"]:
+                out["skip_stopped"] = True
             return self._attach_skip_dates(out)
 
         # Budget elapsed with the fast-forward still running: stop the engine and
@@ -279,6 +288,7 @@ class ClannadBridge:
         out = self._with_seen(final or state, seen)
         out["skip_timeout"] = True
         out["skip_stopped"] = True
+        out["skip_stop_reason"] = out.get("skip_stop_reason") or "client_timeout"
         return self._attach_skip_dates(out)
 
     def save(self, slot: int) -> dict:
