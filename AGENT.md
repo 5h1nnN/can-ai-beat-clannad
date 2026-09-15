@@ -1602,3 +1602,66 @@ if let Some(v) = self.ctx.pop() { self.push_return_value_raw(v); }           // 
 
 > 还有一处待确认：`dispatch_form_code` 只是 `opcode::OpCode::form(form_id)` + `dispatch_code`，
 > 106/107 的具体路由在 `opcode` 模块里 —— 下一轮读它即可定论。
+
+---
+
+## 19.19 停机已修复（2026-09-15）：两处 `str stack underflow` 都清除，并证实第三个 `halted` 是探针假象
+
+### 948 的完整指令序列（`SIGLUS_TRACE_VM`，零代码改动）
+
+```
+push_str "＊Ａ" → before COMMAND(0x30) pc=0x20024
+pop_str -> "＊Ａ" ; pop_element -> [108]
+push_element []          ← ★ namae(108) 走「未实现 form 保命回退」，推的是**空元素**
+before PROPERTY(0x05) pc=0x20039 ; pop_element -> [] ; CD_PROPERTY elm=[]
+exec_property enter elm=[]        ← 空元素走 `if elm.is_empty() { push_int(0) }`（vm.rs:7359）
+push_int 0                        ← ★ 值进了**整数栈**，字符串栈仍为空
+before ASSIGN(0x20) pc=0x2003a → pop_str underflow
+```
+
+⇒ **两处停机互不相同、必须一起修**（此前单独试任何一个，都只是把停机推到另一处）：
+
+| 站点 | 机理 | 修复 |
+|---|---|---|
+| `seen6416:948` | `namae` 返回**空元素** ⇒ `PROPERTY` 走 `elm.is_empty()` 分支压 `Int 0` ⇒ `ASSIGN` 的 `pop_str` 下溢 | 实现 `namae` 返回**真正的槽位引用** `[107, elm_array, slot]` |
+| `seen6416:949` | 脚本自建的 `namae_global[elm_array][1]` 与 parent-slot 同形，被 `try_parent_slot_property` **截胡**且不压值 | `try_parent_slot_property` 开头守卫：全局索引列表头直接 `return false` |
+
+### 自测（同一个 4 分钟无头复现）
+
+```
+clannad_probe --project <游戏根> --scene seen6416 --frames 40000 --click --click-every 12
+```
+
+| | 结果 |
+|---|---|
+| 修复前 | `engine_halt.log` 有 `[ENGINE_STR_UNDERFLOW]`，停在 line 946→948/949 |
+| **修复后** | **`engine_halt.log` 完全未产生**（无任何下溢），运行推进到 **line 1673** |
+
+### 剩下的第三个 `halted=true` 是**探针假象**（已证实）
+
+修复后停在 `line=1673 pc=0x39042`，追踪末行：
+
+```
+before opcode=RETURN(0x15) pc=0x39042 | call_depth=1 scene_stack=0
+RETURN decoded argc=0 args=[] … frame=ret_form=20
+VM halted at frame=17667
+```
+
+即 19.16 记录的 **`return_at_root_frame`**（`vm.rs:4298-4302`）：探针用 `--scene seen6416` 把场景
+**单独当根**启动，所以场景末尾那个 `RETURN` 没有调用者可返回 ⇒ 停机。
+**真实游戏里 `seen6416` 是由上层调度场景 farcall/user-cmd 进入的**（`call_depth>1`），不会触发。
+
+### 提交
+
+| 提交 | 内容 |
+|---|---|
+| `d2083eb` | 重新应用 `namae` 槽位引用实现（`exec_builtin_global_control` + `namae_slot_index`） |
+| `46ab7f2` | `try_parent_slot_property` 的全局索引列表守卫 |
+
+### 仍需用户确认的最后一关
+
+**标题 → New Game → skip**：上次 `c5921d9`（把 `namae` 返回值做成字符串）就是在这一步回归的。
+这次的差别是 `namae` 仍返回**元素**（与旧的空元素同一类值，栈形状契约不变），
+只把它从「空元素」换成「真槽位引用」；lvalue 写入现在真正落到 `namae_global` 槽位
+（以前写进空元素＝无效），走的是既有的 `assign_to_chain`。
+**无头自测无法覆盖标题菜单点击**，所以这一关必须由用户跑一次。
