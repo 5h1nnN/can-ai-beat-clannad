@@ -1723,3 +1723,34 @@ if elm.first().copied().is_some_and(|head| {
 `SYSCOM::DELETE_SAVE`（`syscom.rs:4890-4913`）→ `delete_slot()`（`:2227-2243`）
 → `remove_game_file()`（`:3818`，`fs::remove_file`，**不进回收站**）+ 缩略图 + 槽位元数据置默认。
 本次没有触发（三个槽位文件都在），但这是端口里唯一会删存档的路径，值得知道。
+
+### 4. 用户追问的两点（2026-09-15）
+
+**(a) 「`get_save_list` 返回空」——列表逻辑无罪，是那个引擎实例的内存状态**
+
+用户问「`savedata_zh` 和 `SAVEDATA` 用哪个」：`original_save::save_dir`（`original_save.rs:709-718`）
+**只要 `savedata_zh` 存在就用它**；`SAVEDATA` 只是备用（Windows 大小写不敏感，即 `savedata`）。
+
+用 `clannad_ctl`（全新进程，内部会 `sync_save_slots_from_disk`）复现，**三个存档全部正确列出**：
+
+```
+save_count=100, save_used=3, save_slots[0..2].exist=true
+  0: "一望无际的白色世界…"   1: "（这种东西根本没办法听…）"   2: "感觉有些可怜。"
+```
+
+⇒ 磁盘、`savedata_zh`、`sync_save_slots_from_disk`、`get_save_list` 取值链**都正常**。
+空列表来自**当时那个引擎实例的 `save_slots` 内存状态**（`siglus_engine.rs:4664-4677` 的 STATE
+直接用 `ctx.globals.syscom.save_slots`）。下次出现时要抓**引擎实例**的现场，
+而不要再怀疑磁盘/列表逻辑。
+
+**(b) 提示音但「完全没有任何窗口」= 建窗或渲染器初始化失败**
+
+`pump_desktop_messagebox_requests`（`siglus_engine.rs:3769-3790`）在
+`DesktopMessageBoxWindow::new`（`desktop_messagebox.rs:104-140`：
+`create_window` + `pollster::block_on(Renderer::new(window))`）失败时，
+会 `log::error!("desktop messagebox creation failed: {err:#}")` 并**回一个 cancel 结果**
+⇒ 不会永久卡死，但游戏会带着「cancel」继续走（可能就是 skip 行为变怪的原因）。
+
+⇒ **下一步**：抓引擎实例的日志/控制台输出里那行 `desktop messagebox creation failed`，
+确认是 `create_window` 还是第二个 wgpu `Renderer` 初始化失败；若是后者，
+第二窗口不该再建独立 renderer（可复用主 renderer 或在游戏内绘制该 modal）。
