@@ -1430,3 +1430,33 @@ clannad_probe.exe --project <游戏根> --scene seen6416 --frames 3000 --click -
 1. 长跑是否到达 line 948 且不停机；
 2. 用 `seen0415`（lvalue 路径 `namae("％Ａ") = "古河"`）无头跑一遍，确认写路径不异常；
 3. 前两项通过后，再交给用户验证**标题 → 新游戏**（上次就是这一步回归的）。
+
+### 自测结论（2026-09-15）：**没修好**，已 revert（`962bdaa`，exe `size=59210618` = 已知可玩版本）
+
+40000 帧长跑**到达了失效点**，仍然停机：
+
+```
+[ENGINE_STR_UNDERFLOW] scene=Some("seen6416") line=949 pc=0x202aa
+                       str_len=0 int_len=4 ctx_len=0 call_depth=1 scene_stack=0
+ring 末条: [ENGINE_CMD] line=949 pc=0x2029c elm=[108] cmd_form_id=108 ret_form=23
+           argc=1 arg_forms=["str"] str_len_before=0 str_len_after=0
+           call_depth=1 call_depth_after=1 result="Ok"
+```
+
+`0x202aa = 0x2029c(COMMAND 结束) + 1(PROPERTY) + 12(ASSIGN 操作数)` ⇒ 与用户现场**同构**
+（`COMMAND namae → PROPERTY → ASSIGN`，`right_form=20`）。
+
+⇒ **缺的一环不在 `namae` 的返回编码，而在 `exec_property` 的编组**：
+`namae` 这次确实被派发（`result="Ok"` 走的是新分支），引用元素也压进了元素栈，
+但 `PROPERTY` 消费 `[107, ELM_ARRAY, slot]` 之后**没有把字符串送进字符串栈**
+（`str_len_after=0`），于是 `ASSIGN` 的 `pop_str()` 依旧下溢。
+
+下一步（已缩小到一个函数）：`exec_property`（`vm.rs:7345`）的 FORM 分支顺序是
+`dispatch_global_indexed_list_property_direct`（`:7432`，**最先**）→ `try_parent_slot_property`
+→ compact → `dispatch_form_code`。很可能**第一个**就把 `107` 当「global indexed list」接走了，
+而它内部的 `take_ctx_return(...)` 取的是 `ctx.vm_call.ret_form` —— PROPERTY 路径下没有设置
+`vm_call` ⇒ 默认 `0 = fm_void` ⇒ **什么都不压**。
+需要在 `exec_property` 里确认 `[107, ELM_ARRAY, 0]` 到底走了哪个分支、值进了哪个栈，
+再决定「补编组」还是「改引用形状」。
+
+> 自测的价值在这里兑现了：这次**没有**把未验证的改动交给你 —— 游戏始终保持在你确认可玩的构建上。
