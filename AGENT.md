@@ -1142,3 +1142,74 @@ enter_*_user_cmd_*(caller.ret_form = ret_form) → … → return_from_scene` �
 `namae` 的取值来源我按 gameexe 的 `#NAMAE` 表（`tables.namae_entries` → `resolve_gameexe_namae`）
 实现，与 stage.rs 渲染人名同源。若运行中发现**人名/名牌文本不对**，说明它应当改读
 `namae_global`/`namae_local` 字符串列表（`syscom.rs` 里那两张表），届时按现象再调。
+
+---
+
+## 19.17 19.16 的修复是错的，已 revert（2026-09-14）：`namae` 返回的是**引用**，不是字符串
+
+### 现象与处置
+
+用户在 `c5921d9` 上「点 New Game 直接卡在标题画面，进不去游戏」。
+已 `git revert c5921d9` → **`a21d2fb`**，release 重建，`size=59210618`
+—— 与修复前的已知良好版本**大小完全一致**，行为回到 19.15 结束时的状态
+（标题 / 新游戏可用；`seen6416:948` 的停机也随之回来）。
+
+### 错在哪（一句话）
+
+`namae(str)` 的语义**不是**「返回显示名字符串」，而是「返回一个 **strref 引用**（名字槽）」。
+
+### 证据：`namae(...)` 是**左值**（脚本层证据，比推理硬）
+
+`diagnostics/decompiled/all/` 全文 29 个文件、共 188 处 `namae(`。最要命的是这些：
+
+```
+seen0415.ss:3238: ... .namae("％Ａ") /* ret=strref */ /* al_id=0 */ = "古河";
+seen0415.ss:3240: ... .namae("％Ｃ") /* ret=strref */ /* al_id=0 */ = "古河";
+seen0415.ss:3242: ... .namae("％Ｅ") /* ret=strref */ /* al_id=0 */ = "岡" + "崎さん";
+seen1006.ss:160:  __missing_elm_point(stack_len=15) = s[0].namae("％Ｅ") /* ret=strref */ /* al_id=0 */;
+```
+
+`namae(...)` 出现在**赋值语句的左侧**。**标题 → 新游戏一开始就要写角色名**，所以我把它的
+返回值从「引用」改成「显示名（String）」之后，这条路径立刻失效 —— 这就是卡在标题画面的原因。
+（我引用的 `excall.rs` 的 `FM_STRREF → Value::Str` 只是**返回缺省值**那一小块，不能推广成
+「strref 一律是字符串」。）
+
+### 对 `seen6416:948` 的重新解读（与 lvalue 一致）
+
+`ASSIGN` 操作数 = `(left_form=23=STRREF, right_form=20=FM_STR, al_id=1)`。
+
+`left_form=23` 说明**赋值目标本身的形态就是 strref** ⇒ 该语句形状是
+**`namae("＊Ａ") = <string>`**，与上面的 lvalue 用法完全一致。
+反编译器把它渲染成 `__missing_elm_point(...) = s[0].namae("＊Ａ")`，正是因为它无法给
+「strref 目标」起名（`stack_len=643` 也说明目标来自栈槽）。
+
+**修正 19.16 的第 3–5 步**：`namae` 走「未实现 form 保命回退」时推的是**空元素**
+`Value::Element(vec![])`；`take_ctx_return(23)` 把空元素压到元素栈；随后的 `PROPERTY(0x05)`
+**无法从空元素解引用出字符串**；于是 `ASSIGN` 的 `pop_str()`（`right_form=20`）在空字符串栈上
+下溢 ⇒ 停机。
+
+⇒ 正确修复 = **把 `namae` 实现为返回真正的 strref 引用元素**（既满足 lvalue 写入，
+也让后续解引用拿到字符串），**不是**返回字符串，**也不是**空元素。
+
+### 已知线索（供实现，不必再摸索的部分）
+
+| 线索 | 位置 |
+|---|---|
+| `namae` = Command / parent=global / **form=strref** / code=108 / `arg_spec "0:str;"` | `siglus_script_compiler/src/generated_definitions.rs:214` |
+| `namae_local` = Property **strlist** code 106；`namae_global` = Property strlist code 107 | 同上 `:212-213` |
+| 场景头有 `namae_list_ofs` / `namae_cnt`；**VM 只读了这两个偏移，没有解析数组** | `siglus_scene_vm/src/scene_stream.rs:37-38, 86-87` |
+| 反编译器同名字段会 `read_i32_array(...)`（VM 可照抄） | `siglus_ss_decompiler/src/scene.rs:212` |
+| 参数是全角占位符：`％Ａ` / `％Ｃ` / `％Ｅ`（lvalue 侧）、`＊Ａ`（seen6416:948） | 反编译产物 |
+
+### 下一步（不再靠猜）
+
+1. **离线**确认 `namae_list` 与「场景字符串表 / 占位符」的对应关系
+   （照抄 decompiler 的 `read_i32_array` + 场景字符串表，把 `namae_list` 打印出来比对）；
+2. 据此实现 `namae`（108）返回**真正的 strref 引用元素**；
+3. 若离线仍不能确定，再加一个**纯只读探针**：在 `exec_builtin_scene_form` 里对 `form_id==108`
+   记录 `scene/line/pc/arg0/namae_list/namae_cnt` 后 **`return Ok(false)`**（行为与现在完全一致，
+   不可能破坏可玩性），用一次运行定案；
+4. `FM_STRREF` 的编组改动（回退分支 / `push_default_for_ret` / `return_from_scene` / `exec_return`）
+   随本次 revert 一并撤掉了 —— **要重新加必须与「引用实现」一起、且逐个确认不会改变既有容错行为**；
+   `take_ctx_return` 里那个「非字符串就 `bail!`」的 STRREF 分支**不要**恢复（它会把原本能过的
+   情况变成硬错误）。
