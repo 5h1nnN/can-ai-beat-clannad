@@ -130,16 +130,23 @@ class ClannadBridge:
             self._sock = None  # one response per connection; close for next call
 
     def state(self) -> dict:
-        """Read the latest status snapshot (no action)."""
+        """Read the latest status snapshot (no action).
+
+        `date` (in-game month/day/weekday) is present only when it just changed.
+        """
         return self.send("STATE")
 
-    def _poll_state(self, cond, timeout: float = 8.0, interval: float = 0.08) -> dict:
+    def _poll_state(self, cond, timeout: float = 8.0, interval: float = 0.08, seen: dict | None = None) -> dict:
         """Repeatedly read STATE until `cond(state)` is true or `timeout` elapses.
 
         The engine executes queued bridge commands on its render loop and refreshes
         the shared status every frame, so polling STATE returns the *post-action*
         state once the action has taken effect. This fixes the "reply is sent before
         the command executes" problem.
+
+        `seen` (optional) collects values that appeared in ANY intermediate state —
+        the in-game `date` — because the engine publishes that field only on the
+        frame where it changed, so the final state may no longer carry it.
         """
         import time
 
@@ -147,23 +154,37 @@ class ClannadBridge:
         last = {}
         while time.monotonic() < deadline:
             last = self.state()
+            if seen is not None and last.get("date") is not None:
+                seen["date"] = last["date"]
             if cond(last):
                 return last
             time.sleep(interval)
         return last
 
+    @staticmethod
+    def _with_seen(state: dict, seen: dict) -> dict:
+        """Merge change-only fields observed mid-poll into the returned state."""
+        out = dict(state)
+        for key, value in seen.items():
+            out.setdefault(key, value)
+        return out
+
     def advance(self) -> dict:
-        """Advance one dialogue step; return the state AFTER it advanced."""
+        """Advance one dialogue step; return the state AFTER it advanced.
+
+        `date` is present only when the in-game date changed during this step.
+        """
         before = self.state()
         self.send("ADVANCE")
         bscene, bline, btext = before.get("scene"), before.get("line"), before.get("text")
+        seen: dict = {}
 
         def changed(s):
             if s.get("choices"):
                 return True  # reached a choice; stop
             return (s.get("line") != bline) or (s.get("text") != btext) or (s.get("scene") != bscene)
 
-        return self._poll_state(changed)
+        return self._with_seen(self._poll_state(changed, seen=seen), seen)
 
     def choose(self, idx: int) -> dict:
         """Choose choice index `idx`; return the state AFTER the choice is applied."""
@@ -196,6 +217,7 @@ class ClannadBridge:
         self.send("SKIP")
         started = time.monotonic()
         saw_active = False
+        seen: dict = {}
 
         def arrived(s: dict) -> bool:
             """True when the fast-forward is over.
@@ -219,9 +241,9 @@ class ClannadBridge:
             # short grace period instead of stalling until the budget.
             return bool(s.get("choices")) and (time.monotonic() - started) > 1.5
 
-        state = self._poll_state(arrived, timeout=budget, interval=0.15)
+        state = self._poll_state(arrived, timeout=budget, interval=0.15, seen=seen)
         if arrived(state):
-            out = dict(state)
+            out = self._with_seen(state, seen)
             out["skip_timeout"] = False
             return out
 
@@ -235,8 +257,8 @@ class ClannadBridge:
             # report; treat it as stopped so we still return promptly.
             return not s.get("skip_active", False)
 
-        final = self._poll_state(stopped, timeout=3.0, interval=0.1)
-        out = dict(final or state)
+        final = self._poll_state(stopped, timeout=3.0, interval=0.1, seen=seen)
+        out = self._with_seen(final or state, seen)
         out["skip_timeout"] = True
         out["skip_stopped"] = True
         return out
