@@ -692,18 +692,22 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - MCP Server stdio：`tools/list` 10 工具；MCP Inspector 可加载（`from mcp_server.bridge import` 绝对导入修复 `mcp dev` 单文件加载问题）。
 
 ### ⚠️ 未解决/确认的引擎缺口（本会话确认为**非 off-by-one**，是 §16.2 真实缺口）
+
+> **状态更新（2026-09-15）**：本条后来已被 §19.9–19.13 推翻并修复——真因是 `--auto-start`
+> 在选择点每帧注入 Enter、以及 READY 阶段的待决选择被误判；`choose()` 与窗口手选现均正常。
+> 以下内容仅作历史记录。
 - **`choose()` 无论手动还是 MCP，都进第一项**。SG_SELBTN_TRACE 决定性证据：
   - 手动选第 2 项：`deliver result=1 choices=2 cursor=1`；`choose(1)`：`deliver result=1`；两条路径 result 都正确指向第 2 项，**但脚本仍进第一项**。
   - `ctx_return` trace：`$mes_sel` 结果**不走 `take_ctx_return` 常规命令返回栈**；选择后进入 `_cl_forclannad` 场景，其 `include-call` 返回 `246`/`-1`（choice→分支 分发），而这些值不被正确应用。
 - **根因 = §16.2 `_cl_forclannad` include-call 缺口**：`ASSIGN` 的 STR 实参未入栈 → `str stack underflow`；`assign_call_prop_result` 对 include-call 参数 form=20 `sub=[0]` 不支持。CLANNAD `$mes_sel` 的选择结果经 `_cl_forclannad` 分发，此缺口导致**所有选项都走默认/第一条分支**。**这不是 off-by-one（已排除：result=1 正确仍进第一项），而是引擎 include-call 实参传递缺陷**。
 - AGENT.md §16.2 已记：真正修法是**实现 include-call（`cur_call.*` / `CALL.L/K` / `__elm` 参数）的字符串实参传递与 form=20 赋值**，属中等以上引擎工作量。
-- （另：load 回开头再 skip 偶发卡死/停在 `_system_language`，同属深推/runtime 状态残留，优先级低于 `_cl_forclannad`。）
+- （另：load 回开头再 skip 偶发卡死/停在 `_system_language`，同属深推/runtime 状态残留，优先级低于 `_cl_forclannad`。）→ **2026-09-15 已修复，见 §19.14–19.29。**
 
 ### 下一步目标（主）
 1. **修复 §16.2 `_cl_forclannad` include-call 字符串实参传递 + form=20 赋值** → 让 CLANNAD 选择分发真正生效 → 手动/`choose()` 能选不同分支 → **游戏可正常游玩分支**。
    - 入口：`_cl_forclannad` 场景、`$mes_sel` 后的 include-call（`cur_call.*`/`CALL.L/K`/`__elm`）、`assign_call_prop_result` 对 form=20 的处理。
    - 验证：走到真实选择点，`get_choices` 返回多选项，`choose(i)` 进第 i 项分支；`manual` 选第 2 项进第 2 项。
-2. （次要）深推/load-back 后 skip 的 runtime 残留卡死。
+2. ~~（次要）深推/load-back 后 skip 的 runtime 残留卡死。~~ **2026-09-15 已修复，见 §19.14–19.29。**
 
 ### 状态
 - 已提交：`siglus_rs@a3eb708`（引擎/桥/control+state 修复）；`mcp_server` 已落库（16a996e 等）。
@@ -848,6 +852,8 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 3. `pending_sel_point_result` 是**单槽邮箱**；实测 `pending_before` 恒为 `None`，未发现抢占。
 4. `--scene` 直启可在本机复现"场景根 return 停机"（`clannad_ctl` 会打印 `halt_ctx`），
    这是目前唯一可稳定复现的 VM 停机形态。
+   （**2026-09-15 更正**：这是**探针单场景启动**造成的 C 类假象——真实游戏里该场景由上层调度
+   进入，不会触发；游戏内的停机属于 A/B 类，见 §19.14–19.29。）
 
 ### 观测口径（本会话最大收获，必须固化）
 
@@ -872,6 +878,10 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
    取到非法 `return_pc` → `CD_NONE`。唯一尚未记录的场景帧变异点是
    `restore_inline_exec_checkpoint` 里的 `scene_stack.truncate(checkpoint.scene_depth)`（`vm.rs:676`）。
    **下次处理应先给它加探针，并用一次通过上述 1–4 校验的测试确认。**
+
+   **2026-09-15：已修复。** 就是 §19.14–19.29 处理的那处（`seen6900:69`、`scene_stack` 为空、
+   `exec_return` 取到非法 `return_pc` → `CD_NONE`）；根因是**调用方帧的场景标签被写成被调场景**，
+   加上**存档给每帧都写"当前场景"且读取时丢弃、`scene_stack` 完全不入存档**。
 2. **load 到有选项处选项不立刻出现** —— 用户判定为小问题，**暂时不管**。
    （已知 `BridgeCmd::Load` 的 reprepare 分支以 `ctl_selbtn_active` 为条件；任何放宽都会踩第 2 条陷阱。）
 
