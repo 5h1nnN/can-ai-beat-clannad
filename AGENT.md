@@ -1798,3 +1798,80 @@ save_count=100, save_used=3, save_slots[0..2].exist=true
   看容错是否让它继续、清单记到了什么；
 - 用户**重启 MCP server** 后即可用 `get_recovered()` 抓整份清单；
 - 之后按清单里 `count` 从高到低批量修。
+
+---
+
+## 19.28 「读档回开头再 skip」停机的根因（2026-09-15）：**存档不保存场景栈**
+
+### 症状与复现（已完全无头化）
+
+```
+clannad_ctl --project <游戏根> --scene seen0414 --load-slot 0 --skip-to-choice --frames 6000
+→ steps=192 halted=true halt_reason=cd_none
+   recovered: scene=seen6900 line=69 pc=0x298 exec_return resync_to=0x29b
+```
+
+（`--load-slot N` 是我为这件事给 `clannad_ctl` 新加的开关；`choose.final` 事件里现在会带
+`halt_reason` 与 `recovered` 清单。）
+
+### 证据链（每一步都有日志/代码）
+
+1. **所有 7 个 `return_pc` 写入点都插了桩**，并用 `SIGLUS_TRACE_CALLPC_ALL=1` **无条件记录每次写入**：
+   一次读档会话里共 **616 次写入，没有任何一次写过 `0x298`**
+   ⇒ 这个坏 pc **不是本次运行的调用路径产生的**，只能来自**恢复的状态**。
+2. `write_cpp_call_frame` 把 **当前**场景名写给**每一个**帧（所有帧同一个值，无信息量）；
+   `read_cpp_call_frame` **直接丢弃**这个字段（`let _scn_name = rd.string()?;`）。
+3. `scene_stack` **在整份 vm.rs 里没有任何序列化点** —— 存档只保存 `call_stack`。
+   ⇒ 读档后：`call_stack` 有帧，**`scene_stack` 为空**。
+4. `[ENGINE_RETPATH]` 探针在病灶处（这个探针只在"调用方帧的 pc 在当前流里非法"时打印）：
+
+```
+[ENGINE_RETPATH] scene=seen6900 line=69 depth=2 caller_scene=Some(203)=当前场景
+                 caller_ret_pc=0x298 in_current_stream_bad=true boundary=false scene_stack_len=0
+```
+
+   - `depth=2` = 只回到**场景基帧** ⇒ 这是**场景级返回**；
+   - `scene_stack_len=0` ⇒ **没有边界记录**，于是被判为"同场景返回"，走 `exec_return`；
+   - `0x298` 在 **seen0414** 里是 `0x03`(POP，合法)，在 **seen6900** 里是 `0x00`(填充)
+     ⇒ 这个 pc 属于**存档来源的那个场景**，被用在了当前场景上。
+
+**一句话根因**：读档后场景栈丢失，导致**跨场景/场景级返回无法被识别**，用同场景路径
+`exec_return` 恢复了"属于另一个场景的返回地址" ⇒ 解码失步 ⇒ `cd_none`。
+指纹就是 `boundary=false` + `scene_stack_len=0` + `caller_scene == current_scene`。
+
+### 修复方案（尚未实现，方向已明确）
+
+1. **把场景栈持久化进存档**（或至少存"每个场景基帧要返回的那个场景"）：
+   出场景时的基帧应记录**调用方场景**（返回目标），而不是被进入的场景；
+   `write_cpp_call_frame` 应写**帧自己的场景**（现在写的是"当前场景"，等于没写）。
+2. 读档时据此**重建 `scene_stack`**（调用方场景的流可从 `cached_scene_stream` 取回）。
+3. 修完用下面的自测闭环验证，**并必须重跑 `seen6416` 回归门槛**。
+
+### 我建立的自测闭环（后续请继续用）
+
+| 用途 | 命令 |
+|---|---|
+| 复现/验收读档停机 | `clannad_ctl --project <游戏根> --scene seen0414 --load-slot 0 --skip-to-choice --frames 6000`（看 `choose.final` 的 steps/halted/halt_reason/recovered） |
+| **回归门槛** | `clannad_probe --project <游戏根> --scene seen6416 --frames 40000 --click --click-every 12`：**必须不产生 `engine_halt.log`**，且 `probe done ... line=1673 halted=true`（此后那个 halted 是探针单场景启动的 `return_at_root_frame` 假象） |
+| 造新存档 | `clannad_ctl --project <游戏根> --scene seen0414 --verify-sl --save-at-frame 1500 --slot 3 --frames 3000`（看 `{"event":"save"}` 与 `sl.roundtrip ok:true`） |
+| 追踪 | `SIGLUS_TRACE_CALL_RETURN_PC=1`（调用/返回 pc）、`SIGLUS_TRACE_CALLPC_ALL=1`（每次写入）、`SIGLUS_TRACE_VM[_SCENE/_PC]`（逐指令） |
+
+### 失败尝试（不要再重复）
+
+| 尝试 | 结果 |
+|---|---|
+| 每个调用都写 `callee.return_override` 并在返回时优先用它 | **回归**：`seen6416` 出现新下溢 `_system_language:350 pc=0x2306` |
+| 给帧加 `scene_no` + 在"场景栈为空"时按帧场景重建边界 | **同样回归**（同一个 `_system_language:350` 下溢），且没修好读档停机 |
+| 把 `at_cross_scene_return_boundary` 放宽为"场景不匹配也算" | 1003 次 `cross-scene RETURN at wrong call depth`（破坏深度约定） |
+| 在 `self.stream = saved.stream` **之前**校验跨场景返回 pc | 自己造出的失步（`52c0dc0` 已修：校验必须放在流恢复之后） |
+
+### 当前状态
+
+- 行为代码 = `f890570`（= 已修的 948/949 + A 类容错 + CD_NONE/未知操作码/返回 pc 落填充的容错 +
+  返回 pc 校验位置修正）；
+- **未修**：本文这处读档失步（根因已定，需按上面第 1–2 步实现场景栈持久化）；
+- release exe：`size=59252087`、`mtime=09/15 16:57:27`（重建后请核对 `[BUILD]` 行）；
+- 验证记录：`f890570` 状态下 `clannad_probe --scene seen6416 --frames 40000` **不产生 `engine_halt.log`** ✓，
+  读档复现为 `steps=192 / cd_none / 1 站点` ✓（即本处未修，其余已修）；
+- 我测试时建的槽位 3 存档已删除，用户原有 `0000/0001/0002.sav` 未改动（另有备份在
+  `diagnostics\save_backup_2026-09-15\`）。
