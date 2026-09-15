@@ -1390,3 +1390,43 @@ rvalue（`seen6416:948` 的 `PROPERTY`）走 `dispatch_stateful_form` → 读槽
 `＊Ａ`/`％Ａ` → 0、`％Ｃ` → 2、`％Ｅ` → 4、`＊Ｂ`/`％Ｂ` → 1、`％Ｆ` → 5。
 ⇒ 标记字符（＊ / ％）**不参与索引**，只有字母参与（这也是「写 `％Ａ`、读 `＊Ａ` 能对上」的前提）。
 该规则若错，退化为读到空串（不崩），可由 `clannad_probe` 的 `name` 字段观察。
+
+### 实现已落地（2026-09-15）
+
+`exec_builtin_global_control` 增加 `args` 参数（唯一调用点同步），新增 `GLOBAL_NAMAE` 分支：
+
+```rust
+// namae(str) 返回「名字槽引用」，而不是名字字符串
+let slot = namae_slot_index(raw);            // 全角/ASCII 字母 → 0..25 / 26+i*26+j
+self.ctx.push(Value::Element(vec![
+    codes::ELM_GLOBAL_NAMAE_GLOBAL,          // 107
+    elm_array,                               // ctx.ids.elm_array（0 时退回 codes::ELM_ARRAY）
+    slot,
+]));
+```
+
+- 新增自由函数 `namae_slot_index()`（放在环形探针旁边）；
+- **没有**动 `take_ctx_return` / `push_default_for_ret` / `return_from_scene` / `exec_return` /
+  未实现 form 回退 —— 上一次就是动了这些才把 New Game 弄坏。
+  `ret_form=23` 走 `take_ctx_return` 既有的 `_` 分支（`Some(Value::Element) => push_element`），
+  刚好把引用压到元素栈，lvalue 与 `PROPERTY` 解引用都成立；
+- 与上次的**关键区别**：这次 `namae` 仍然返回**元素**（和原来的保命回退同一类值），
+  只是从「空元素」变成「真正的槽位引用」——所以不会改变既有的栈形状契约。
+
+### 自测（`clannad_probe` 无头，未打扰用户）
+
+```
+clannad_probe.exe --project <游戏根> --scene seen6416 --frames 3000 --click --click-every 30
+```
+
+结果：`=== probe done: scene=Some("seen6416") line=138 halted=false`，
+**`engine_halt.log` 未产生**（无 `[ENGINE_STR_UNDERFLOW]`），且逐帧输出正常：
+`name=Some("古河")` / `Some("朋也")`、对白文本正常。
+
+**尚未覆盖**：真正的失效点 `seen6416:948`（本次 3000 帧只走到 line 138）。
+已挂一个 40000 帧的长跑（`diagnostics/logs/probe_namae_long.log`）尝试到达该行；结果待补。
+
+**仍待验证**（按顺序）：
+1. 长跑是否到达 line 948 且不停机；
+2. 用 `seen0415`（lvalue 路径 `namae("％Ａ") = "古河"`）无头跑一遍，确认写路径不异常；
+3. 前两项通过后，再交给用户验证**标题 → 新游戏**（上次就是这一步回归的）。
