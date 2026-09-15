@@ -83,13 +83,16 @@ class ClannadBridge:
     """A tiny blocking client for one logical request/reply at a time."""
 
     #: Fallback budget: how long the client waits for the ENGINE's own fast-forward
-    #: budget to end before it gives up and asks the engine to stop (`STOPSKIP`).
+    #: budget to end before it gives up, asks the engine to stop (`STOPSKIP`) and
+    #: returns whatever it has.
     #:
-    #: The engine enforces its own budget (`CLANNAD_SKIP_BUDGET_MS`, default 60s) and
+    #: The engine enforces its own budget (`CLANNAD_SKIP_BUDGET_MS`, default 40s) and
     #: stops exactly when it elapses — that is what makes the game stop AT the budget
-    #: instead of one round trip later (AGENT.md 19.32). Keep this above the engine
-    #: budget, and keep the engine budget comfortably below the MCP client's timeout.
-    SKIP_TIMEOUT = float(os.environ.get("CLANNAD_SKIP_TIMEOUT", "70"))
+    #: instead of one round trip later (AGENT.md 19.32). The whole call must finish
+    #: inside the MCP client's timeout (60s in practice): 45s here + 0.5s of polling
+    #: after `STOPSKIP` + at most one 10s socket timeout (only if the engine is wedged)
+    #: stays under 60s, while still leaving the engine's 40s budget room to land first.
+    SKIP_TIMEOUT = float(os.environ.get("CLANNAD_SKIP_TIMEOUT", "45"))
 
     def __init__(self, host: str = "127.0.0.1", port: int | None = None) -> None:
         self.host = host
@@ -229,12 +232,27 @@ class ClannadBridge:
         (`STOPSKIP`) and return a normal snapshot with `"skip_timeout": true` and the
         partial `skip_lines`, so the state stays consistent and a later skip works.
 
-        The budget defaults to 60s; override it with the `CLANNAD_SKIP_TIMEOUT` env
-        var (seconds).
+        The ENGINE enforces the real budget and stops the fast-forward itself
+        (`CLANNAD_SKIP_BUDGET_MS`, default 40s), so the reply lands within one poll of
+        that budget. This client-side budget (default 45s) is only a fallback for an
+        engine that stopped responding; both must stay below the MCP client's own
+        timeout (60s in practice). Override with the `CLANNAD_SKIP_TIMEOUT` env var
+        (seconds).
         """
         import time
 
         budget = self.SKIP_TIMEOUT
+        # Baseline BEFORE asking for the skip: `skip_seq` identifies the fast-forward
+        # that `skip_active`/`skip_stop_reason` describe. Without it, a skip that both
+        # starts and finishes between two polls is indistinguishable from "not
+        # processed yet" and the call would sit until the fallback budget.
+        before = self.state()
+        seq0 = before.get("skip_seq")
+        ready_deadline = time.monotonic() + 5.0
+        while seq0 is None and time.monotonic() < ready_deadline:
+            time.sleep(0.2)
+            before = self.state()
+            seq0 = before.get("skip_seq")
         self.send("SKIP")
         started = time.monotonic()
         saw_active = False
@@ -243,20 +261,27 @@ class ClannadBridge:
         def arrived(s: dict) -> bool:
             """True when the fast-forward is over.
 
-            Authoritative signal is the engine's own `skip_active` going back to
-            false (it clears it at a choice, on a halt, and when the step budget runs
-            out). `choices` alone is NOT enough: the title/menu scenes report menu
-            items as choices while the fast-forward is still running, which is how a
-            reply used to come back while the game kept skipping.
+            Authoritative signals, in order:
+            1. we watched `skip_active` become true and then false;
+            2. `skip_seq` moved past our baseline, so OUR skip ran -- and since
+               `skip_active` is false, it has already finished (a short skip can start
+               and stop entirely between two polls);
+            3. the VM halted;
+            4. an older engine without `skip_seq`: fall back to `choices` after a short
+               grace period (it may not start a skip at all if the game already sits
+               on a choice).
             """
             nonlocal saw_active
-            if s.get("halted"):
-                return True
             if s.get("skip_active"):
                 saw_active = True
                 return False
             if saw_active:
                 return True
+            if s.get("halted"):
+                return True
+            seq = s.get("skip_seq")
+            if seq is not None and seq0 is not None:
+                return seq != seq0
             # Engine without the field, or a skip that could not start because the
             # game already sits on a choice: fall back to the old signal after a
             # short grace period instead of stalling until the budget.
@@ -284,7 +309,7 @@ class ClannadBridge:
             # report; treat it as stopped so we still return promptly.
             return not s.get("skip_active", False)
 
-        final = self._poll_state(stopped, timeout=3.0, interval=0.1, seen=seen)
+        final = self._poll_state(stopped, timeout=0.5, interval=0.1, seen=seen)
         out = self._with_seen(final or state, seen)
         out["skip_timeout"] = True
         out["skip_stopped"] = True

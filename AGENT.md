@@ -1017,7 +1017,7 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 | 侧 | 改动 |
 |---|---|
 | 引擎 `siglus_engine.rs` | 新增桥命令 **`STOPSKIP`** → `stop_skip()`：停止快进、把已收集的片段留在 `skip_segment`（由 `ctl_state_json` 作为 `skip_lines` 发布），因此停止后的回复是**普通状态快照**；状态 JSON 新增 **`skip_active`** |
-| `bridge.py` | `skip(timeout=None)`：预算默认 **60s**（环境变量 `CLANNAD_SKIP_TIMEOUT` 可调）；**以 `skip_active` 归零为到达信号**（`choices` 只在"从未见到快进启动"时作为兜底，且需 1.5s 宽限）；预算用尽 ⇒ 发 `STOPSKIP` ⇒ 返回 `skip_timeout=true` / `skip_stopped=true` + 部分 `skip_lines`；
+| `bridge.py` | `skip(timeout=None)`：预算只作**兜底**（现为 `CLANNAD_SKIP_TIMEOUT`，默认 45s，见 19.33）；**以 `skip_active` 归零为到达信号**（`choices` 只在"从未见到快进启动"时作为兜底，且需 1.5s 宽限；19.33 起再加 `skip_seq` 判据）；预算用尽 ⇒ 发 `STOPSKIP` ⇒ 返回 `skip_timeout=true` / `skip_stopped=true` + 部分 `skip_lines`；
 | `clannad_mcp.py` | `skip_to_choice()`（**无参数**，固定使用默认预算）；docstring 说明两种返回 |
 
 **端到端验证**（真实引擎 + 桥，`--bridge --auto-start`）：
@@ -1026,11 +1026,11 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 |---|---|
 | 4s（超时路径） | 4.1s 返回 `skip_timeout=true / skip_stopped=true`；随后 STATE `skip_active=false`（**确实停了**）；再 skip 正常（67 行）✓ |
 | 60s（到达路径） | 16.0s **正常到达选择点**（`seen0414:697`，193 行，`skip_timeout=false`）；再 skip 1.7s 返回 ✓ |
-| **默认预算、无参数**（最终形态） | `budget=60s`：23.6s 到达选择点（259 行）；再 skip 1.9s；两次之后 STATE 均 `skip_active=false` ✓ |
+| **默认预算、无参数**（当时形态） | `budget=60s`：23.6s 到达选择点（259 行）；再 skip 1.9s；两次之后 STATE 均 `skip_active=false` ✓（默认预算后来改为引擎侧 40s，见 19.32/19.33） |
 
 ⇒ 现在「超时正常返回 + 游戏停止快进 + 可安全多次 skip」都成立；也不再依赖"延长 timeout"。
-（按用户要求，`skip()` / `skip_to_choice()` **去掉了 `timeout` 参数**，固定使用默认 60s 预算；
-要临时改预算就设环境变量 `CLANNAD_SKIP_TIMEOUT`。）
+（按用户要求，`skip()` / `skip_to_choice()` **去掉了 `timeout` 参数**，固定使用默认预算；
+预算与停止时机后来改由引擎掌握，见 **19.32 / 19.33**。）
 `skip_active` 同时让 MCP 侧与人工排查都能直接看出快进是否还在跑。
 
 ---
@@ -1073,9 +1073,9 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 
 | 侧 | 改动 |
 |---|---|
-| 引擎 | 新增**墙钟预算** `skip_deadline`（`CLANNAD_SKIP_BUDGET_MS`，默认 **60s**）：`start_skip` 时布防，`pump_skip` 每轮检查，**到点立刻自停**（理由 `time_budget`）并照常发布已收集片段；步数上限停止记为 `step_budget` |
+| 引擎 | 新增**墙钟预算** `skip_deadline`（`CLANNAD_SKIP_BUDGET_MS`，默认 **40s**）：`start_skip` 时布防，`pump_skip` 每轮检查，**到点立刻自停**（理由 `time_budget`）并照常发布已收集片段；步数上限停止记为 `step_budget`。**生效值**在启动 `[BUILD]` 行与每次 `[CTL] skip: start` 行打印，排查时不用猜 |
 | 引擎 | 状态 JSON 新增 **`skip_stop_reason`**：`choice`（到达选择点）/`halted`（停机）/`time_budget`、`step_budget`（预算用尽）/`requested`（客户端要求停止） |
-| `bridge.py` | `skip()` 只需等引擎自停：读 `skip_stop_reason` 判定——`choice`/`halted` ⇒ `skip_timeout=false`；`time_budget`/`step_budget` ⇒ `skip_timeout=true`。客户端预算降级为**兜底**（`CLANNAD_SKIP_TIMEOUT`，默认 70s，只用于引擎没停的异常情况） |
+| `bridge.py` | `skip()` 只需等引擎自停：读 `skip_stop_reason` 判定——`choice`/`halted` ⇒ `skip_timeout=false`；`time_budget`/`step_budget` ⇒ `skip_timeout=true`。客户端预算降级为**兜底**（`CLANNAD_SKIP_TIMEOUT`，默认 45s，只用于引擎没停的异常情况） |
 
 **验证**（真实引擎 + 桥，把引擎预算设成 8s 以便快速测量）：
 
@@ -1085,8 +1085,43 @@ SKIP2: elapsed=8.3s（引擎预算 8s） skip_timeout=True skip_stopped=True rea
 RESULT: PASS
 ```
 
-⇒ 停止落在**预算 + 0.3~0.4s**（一个轮询周期），不再有"往返 + 帧"的额外滞后；
+⇒ 停止落在**预算 + 0.3~0.5s**（一个轮询周期），不再有"往返 + 帧"的额外滞后；
 调用返回时 `skip_active` 必为 `false`。
 
-> **环境提醒**：引擎预算必须**明显低于** MCP 客户端自身的超时。若客户端超时是 60s，
-> 用 `CLANNAD_SKIP_BUDGET_MS=45000` 启动引擎，回复就会在 ~45.4s 返回，留出安全余量。
+---
+
+## 19.33 超时的**真正**主因：客户端没认引擎的"已结束"信号（2026-09-15）
+
+**用户实测反馈**：预算改成引擎掌握后，`skip` **仍然超时**（客户端超时 60s）。
+
+**实测时间线**（引擎预算 8s，从自动开局的序章快进）：引擎**1 秒内**就停了
+（`skip_active=false, skip_stop_reason='choice'`，停在 `_system_language:350`），
+但客户端**照样等满自己的兜底预算 50s** 才返回。
+
+**根因**：`bridge.py` 的 `arrived()` 要求先**看见**过 `skip_active=true` 才承认"跑完了"。
+一次**短快进**（起停都落在两次轮询之间）永远看不到 `true`；兜底又依赖 `choices` 非空，
+而该状态下 `choices=[]`（选项项已被拆掉）⇒ 三条路径全不成立 ⇒ 死等到兜底预算。
+**引擎的权威字段 `skip_stop_reason` 当时完全没被用于判断。**
+
+**修复**：引擎为每次真正启动的快进发号 **`skip_seq`**（状态 JSON 发布），客户端在
+**发 SKIP 之前**记下基线，判定顺序改为：
+
+1. 看见 `skip_active=true` 后又变 `false` ⇒ 到；
+2. **`skip_seq` 变了且 `skip_active=false` ⇒ 到**（本次快进已经跑完，哪怕全程落在两次轮询之间）；
+3. `halted` ⇒ 到；
+4. 无 `skip_seq` 的旧引擎才退回 `choices` 兜底。
+
+**兜底预算的余量算式**（保证任何路径都在 MCP 客户端超时内返回）：
+引擎预算 40s + 轮询 ~0.5s ≪ 45s 客户端兜底 + 0.5s 轮询 + 至多一次 10s socket 超时
+（仅当引擎卡死）< **60s**。
+
+**验证**（真实引擎 + 桥，`--bridge --auto-start`，从序章快进）：
+
+| 场景 | 结果 |
+|---|---|
+| 引擎预算 8s，一段长对白 | 8.5s 返回，`reason=time_budget`, `skip_timeout=true`, `skip_active=false`，127 行 ✓ |
+| 默认预算（`[BUILD] skip_budget_ms=40000` 已在启动行核对） | 18.8s **正常到达选择点**（`choice`, `skip_timeout=false`, 259 行, `choices` 两个）✓ |
+| 默认预算连续 6 次 skip（每次到达选择点后 `choose(0)` 再 skip） | 19.0 / 8.7 / 11.4 / 4.8 / 9.2 / 4.0s，**最慢 19.0s**，全部 `skip_timeout=false`、返回后 `skip_active=false` ✓ |
+
+⇒ 用户看到的"超时"主要是上面那个**客户端信号缺陷**（引擎早停了，客户端却死等兜底）；
+预算 60s≈客户端 60s 的默认值也一并修正为 40s，最坏情况现在约 40.5s 返回。
