@@ -1213,3 +1213,73 @@ seen1006.ss:160:  __missing_elm_point(stack_len=15) = s[0].namae("％Ｅ") /* re
    随本次 revert 一并撤掉了 —— **要重新加必须与「引用实现」一起、且逐个确认不会改变既有容错行为**；
    `take_ctx_return` 里那个「非字符串就 `bail!`」的 STRREF 分支**不要**恢复（它会把原本能过的
    情况变成硬错误）。
+
+---
+
+## 19.18 关键机制找到了：`PROPERTY` 会把 strref **解引用**成字符串（2026-09-14）
+
+### 决定性的一条：`CD_PROPERTY` 的栈语义
+
+`vm.rs:4014-4018`：
+
+```rust
+CD_PROPERTY => {
+    let elm = self.pop_element()?;     // 从元素栈弹一个元素
+    self.exec_property(elm)?;          // 读它的属性，把值推到值栈
+}
+```
+
+把它和 `seen6416:948` 的真实指令序列（19.16 已逐字节解出）合起来看：
+
+```
+ELM_POINT@0x1fff5 … ELM_POINT@0x20011   →  压入「赋值目标」元素（并且一直是栈底）
+PUSH fm_int 108 → ELM_POINT             →  构造命令元素 [108]
+PUSH fm_str "＊Ａ"                       →  命令实参
+COMMAND@0x20024  (namae, ret=23/STRREF) →  ★返回值是「引用」，压到元素栈顶
+PROPERTY@0x20039                        →  弹出这个引用，读它 → 推入**字符串**到值栈
+ASSIGN@0x2003a   (left=23,right=20)     →  先弹字符串(rhs) ✓，再弹目标元素 ✓
+```
+
+⇒ 三个栈的操作数**全部对齐**，不需要任何额外假设：
+
+**`namae(x)` 返回的是一个「引用元素」，由紧随其后的 `PROPERTY` 解引用成字符串。**
+
+这同时解释了两件事：
+- 为什么 `left_form=23`（STRREF）出现在 `ASSIGN` 上 —— 目标表达式的形态确实是 strref 体系；
+- 为什么当前会停机：`namae` 走保命回退推的是**空元素**，`PROPERTY` 拿空元素**解引用不出字符串**，
+  于是 `ASSIGN` 的 `pop_str()`（right_form=20）在空字符串栈上下溢。
+
+### 现成可用的机械（不必新造「引用类型」）
+
+`runtime/forms/str_list.rs` 已经把 `namae_local`(106) / `namae_global`(107) 当作 **strlist 元素**处理：
+
+- `chain = [form_id, ELM_ARRAY, index]` → `al_id==1` 写槽位、否则 `ctx.push(Value::Str(槽位值))`
+  （`str_list.rs:194-227`）；
+- 定长 702 = `26 + 26*26` 条（`str_list.rs:32-38`），即「字母索引的名字槽表」；
+- `namae_global` 是**存档状态**（`syscom.rs:1813-1819` 存、`:1913-1915` 读），
+  `namae_local` 由 gameexe 初始化（`vm.rs:11165`）。
+
+⇒ 若 `namae(x)` 返回 `Value::Element([ELM_GLOBAL_NAMAE_GLOBAL, ELM_ARRAY, index])`，
+则 **lvalue 写入**（`namae("％Ａ") = "古河"`）与 **PROPERTY 解引用读出** 都会走**既有代码**，
+不需要新机制。
+
+### 仍然未知（下一步必须先用证据定下来，不许再猜）
+
+**`x`（`％Ａ` / ＊Ａ / ％Ｃ / ％Ｅ 这类全角占位符）→ `index` 的映射规则。**
+
+- 猜测 A：取第二个字符的字母序（Ａ→0、Ｃ→2、Ｅ→4）；
+- 猜测 B：由场景头 `namae_list`（`namae_cnt` 个 i32）决定 —— VM **还没解析**这个数组
+  （`scene_stream.rs:37-38` 只读了偏移），反编译器会读（`siglus_ss_decompiler/src/scene.rs:212`）；
+- 猜测 C：`＊` 与 `％` 语义不同（本地/全局），需要各自映射。
+
+### 下一步的正确做法（含「先自测、再给你」）
+
+1. **离线取数**：给 `siglus_ss_decompiler` 加一个只读子命令（或写个小 bin），把某个场景的
+   `namae_list`（i32 数组）+ 场景字符串表（占位符所在索引）打印出来，与 `％Ａ/％Ｃ/％Ｅ/＊Ａ`
+   的出现位置比对，定出映射规则；
+2. **实现** `namae`（108）返回 `[ELM_GLOBAL_NAMAE_GLOBAL|LOCAL, ELM_ARRAY, index]`；
+3. **先用无头探针自测，再交给用户**：
+   `target\debug\clannad_probe.exe --project E:\SteamLibrary\steamapps\common\CLANNAD --scene <场景> --frames N --click --click-every 40`
+   —— 它能打印 `scene/line/blocked/name/text/choices`，其中 **`name` 就是名牌文本**，
+   足以在**不打扰用户**的情况下验证：a) 不再停机；b) 名牌/名字槽内容正确；c) 标题→新游戏路径未回归。
+   **教训：上一次就是没有自测就把改动交给用户，才把 New Game 弄坏。**
