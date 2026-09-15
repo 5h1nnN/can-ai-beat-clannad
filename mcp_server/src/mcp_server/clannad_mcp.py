@@ -103,9 +103,17 @@ def choose(idx: int) -> dict:
 
 
 @mcp.tool()
-def skip_to_choice() -> dict:
-    """快进到下一个选择点（跳过中间对白）。返回到达选择点时的状态。"""
-    return get_bridge().skip()
+def skip_to_choice(timeout: float | None = None) -> dict:
+    """快进到下一个选择点（跳过中间对白）。返回到达选择点时的状态。
+
+    返回里带 `skip_lines`（本次快进收集到的全部对白）以及：
+    - `skip_timeout=false`：正常到达选择点/停机；
+    - `skip_timeout=true` 且 `skip_stopped=true`：快进超出预算，已**主动让引擎停止快进**并正常返回，
+      此时的 `line`/`text` 是停止现场，可安全地再次调用 skip。
+
+    timeout 是本次快进的预算秒数（默认取环境变量 `CLANNAD_SKIP_TIMEOUT`，缺省 25 秒）。
+    """
+    return get_bridge().skip(timeout=timeout)
 
 
 @mcp.tool()

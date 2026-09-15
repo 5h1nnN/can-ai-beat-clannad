@@ -11,6 +11,7 @@ Wire protocol (one line in -> one JSON line out):
     LOAD:<n>                   load slot n
     JUMP:<scene>               restart scene by name
     SKIP                       start fast-forward to next choice
+    STOPSKIP                   stop an in-flight fast-forward (reply keeps skip_lines)
     STATE                      just return the latest snapshot
 
 Status JSON:
@@ -80,6 +81,11 @@ def _read_port(timeout: float = 30.0) -> int:
 
 class ClannadBridge:
     """A tiny blocking client for one logical request/reply at a time."""
+
+    #: How long `skip()` may fast-forward before it stops the engine and returns
+    #: normally (AGENT.md 19.30). Bounded so it stays inside the MCP client's own
+    #: timeout, and so an abandoned skip never leaves the game running away.
+    SKIP_TIMEOUT = float(os.environ.get("CLANNAD_SKIP_TIMEOUT", "25"))
 
     def __init__(self, host: str = "127.0.0.1", port: int | None = None) -> None:
         self.host = host
@@ -167,24 +173,71 @@ class ClannadBridge:
 
         return self._poll_state(resolved)
 
-    def skip(self) -> dict:
+    def skip(self, timeout: float | None = None) -> dict:
         """Fast-forward to the next choice; return the whole fast-forwarded segment.
 
         `skip_lines` holds every dialogue line collected during the fast-forward
         (from the moment skip started until the choice), plus the final state.
-        Stops only at a real choice or a genuine VM halt.
+        Stops at a real choice, a genuine VM halt, or when the budget elapses.
+
+        The budget exists because the caller (an MCP client) has its own timeout: a
+        skip that outlives it leaves the game fast-forwarding with nobody listening.
+        When the budget elapses we ask the engine to STOP the fast-forward
+        (`STOPSKIP`) and return a normal snapshot with `"skip_timeout": true` and the
+        partial `skip_lines`, so the state stays consistent and a later skip works.
+
+        Override the budget with the `CLANNAD_SKIP_TIMEOUT` env var (seconds).
         """
+        import time
+
+        budget = self.SKIP_TIMEOUT if timeout is None else float(timeout)
         self.send("SKIP")
+        started = time.monotonic()
+        saw_active = False
 
-        def reached(s):
-            ch = s.get("choices") or []
-            if ch:
+        def arrived(s: dict) -> bool:
+            """True when the fast-forward is over.
+
+            Authoritative signal is the engine's own `skip_active` going back to
+            false (it clears it at a choice, on a halt, and when the step budget runs
+            out). `choices` alone is NOT enough: the title/menu scenes report menu
+            items as choices while the fast-forward is still running, which is how a
+            reply used to come back while the game kept skipping.
+            """
+            nonlocal saw_active
+            if s.get("halted"):
                 return True
-            # genuine halt only (NOT line<0: non-story scenes like _system_language
-            # report line=-1 but are not end-of-content)
-            return bool(s.get("halted"))
+            if s.get("skip_active"):
+                saw_active = True
+                return False
+            if saw_active:
+                return True
+            # Engine without the field, or a skip that could not start because the
+            # game already sits on a choice: fall back to the old signal after a
+            # short grace period instead of stalling until the budget.
+            return bool(s.get("choices")) and (time.monotonic() - started) > 1.5
 
-        return self._poll_state(reached, timeout=180.0, interval=0.15)
+        state = self._poll_state(arrived, timeout=budget, interval=0.15)
+        if arrived(state):
+            out = dict(state)
+            out["skip_timeout"] = False
+            return out
+
+        # Budget elapsed with the fast-forward still running: stop the engine and
+        # return a normal snapshot. The engine keeps the partial segment, so
+        # `skip_lines` survives, and the game is no longer running away.
+        self.send("STOPSKIP")
+
+        def stopped(s: dict) -> bool:
+            # A missing key means an older engine that has no fast-forward state to
+            # report; treat it as stopped so we still return promptly.
+            return not s.get("skip_active", False)
+
+        final = self._poll_state(stopped, timeout=3.0, interval=0.1)
+        out = dict(final or state)
+        out["skip_timeout"] = True
+        out["skip_stopped"] = True
+        return out
 
     def save(self, slot: int) -> dict:
         return self.send(f"SAVE:{int(slot)}")

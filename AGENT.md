@@ -998,3 +998,34 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - 用户实测：**不再出现停机**（新存档路径 + 原有路线）；
 - 已知遗留：① 旧存档 slot 0 的读档失步（用新构建另存即可）；② 系统消息框遮挡（见 §19.20 待办）；
   ③ "load 到有选项处选项不立刻出现"按用户意见暂搁置。
+
+---
+
+## 19.30 MCP `skip` 超时：改为「停止快进 + 正常返回」（2026-09-15）
+
+**现象**：MCP 的 skip 时间过长时调用方拿不到响应（超时），而引擎还会**继续快进几十秒**才自己停
+（`MAX_SKIP_STEPS` 上限），之后才能再 skip。
+
+**两个真因**：
+1. 客户端 `skip()` 的轮询预算原本是 **180s**，远超 MCP 客户端自身的超时 ⇒ 调用方先超时，
+   游戏在无人监管的情况下继续快进；
+2. 旧实现把「`choices` 非空」当作"到达选择点"，但**标题/菜单场景本身就有 choices**
+   ⇒ 会在引擎仍在快进时提前返回（实测：4s 返回时 `skip_active=true`）。
+
+**改动**：
+
+| 侧 | 改动 |
+|---|---|
+| 引擎 `siglus_engine.rs` | 新增桥命令 **`STOPSKIP`** → `stop_skip()`：停止快进、把已收集的片段留在 `skip_segment`（由 `ctl_state_json` 作为 `skip_lines` 发布），因此停止后的回复是**普通状态快照**；状态 JSON 新增 **`skip_active`** |
+| `bridge.py` | `skip(timeout=None)`：预算默认 **25s**（环境变量 `CLANNAD_SKIP_TIMEOUT` 可调）；**以 `skip_active` 归零为到达信号**（`choices` 只在"从未见到快进启动"时作为兜底，且需 1.5s 宽限）；预算用尽 ⇒ 发 `STOPSKIP` ⇒ 返回 `skip_timeout=true` / `skip_stopped=true` + 部分 `skip_lines`；
+| `clannad_mcp.py` | `skip_to_choice(timeout=None)` 可传预算，并在 docstring 说明两种返回 |
+
+**端到端验证**（真实引擎 + 桥，`--bridge --auto-start`）：
+
+| 预算 | 结果 |
+|---|---|
+| 4s（超时路径） | 4.1s 返回 `skip_timeout=true / skip_stopped=true`；随后 STATE `skip_active=false`（**确实停了**）；再 skip 正常（67 行）✓ |
+| 60s（到达路径） | 16.0s **正常到达选择点**（`seen0414:697`，193 行，`skip_timeout=false`）；再 skip 1.7s 返回 ✓ |
+
+⇒ 现在「超时正常返回 + 游戏停止快进 + 可安全多次 skip」都成立；也不再依赖"延长 timeout"。
+`skip_active` 同时让 MCP 侧与人工排查都能直接看出快进是否还在跑。
