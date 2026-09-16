@@ -162,6 +162,11 @@ class ClannadBridge:
             last = self.state()
             if seen is not None and last.get("date") is not None:
                 seen["date"] = last["date"]
+            # Text-matched ending (AGENT.md 19.34): the engine publishes it for ~1s
+            # around the match, which an `advance` poll can still step over, so keep
+            # the last one seen anywhere in the poll.
+            if seen is not None and last.get("ending") is not None:
+                seen["ending"] = last["ending"]
             if cond(last):
                 return last
             time.sleep(interval)
@@ -176,27 +181,43 @@ class ClannadBridge:
         return out
 
     @staticmethod
-    def _attach_skip_dates(out: dict) -> dict:
-        """Derive `skip_dates` from the positioned dates inside `skip_lines`.
+    def _attach_skip_signals(out: dict) -> dict:
+        """Derive positioned `skip_dates` / `skip_endings` from `skip_lines`.
 
         The engine stamps `date` on the first collected line and on every line where
-        the in-game date changed, so this compact list is the segment's day timeline
-        (index into `skip_lines` + the date at that point). Forward-fill from it to
-        label every line, which is what makes multi-day fast-forwards readable.
+        the in-game date changed, so `skip_dates` is the segment's day timeline
+        (index into `skip_lines` + the date at that point). It stamps `ending` on the
+        exact line whose text matched a configured TRUE END judgment phrase
+        (AGENT.md 17 / 19.34), so `skip_endings` says which line ended the route
+        instead of leaving a caller to re-match text itself.
         """
         lines = out.get("skip_lines") or []
         dates = []
+        endings = []
         for i, line in enumerate(lines):
-            if isinstance(line, dict) and isinstance(line.get("date"), dict):
+            if not isinstance(line, dict):
+                continue
+            if isinstance(line.get("date"), dict):
                 dates.append({"index": i, **line["date"]})
+            end = line.get("ending")
+            if isinstance(end, dict):
+                endings.append({"index": i, "text": line.get("text", ""), **end})
         if dates:
             out["skip_dates"] = dates
+        if endings:
+            out["skip_endings"] = endings
+            # The last one is the route's end state; also surface it at the top level
+            # so a caller that only reads the summary still sees the ending.
+            out.setdefault("ending", {"name": endings[-1]["name"], "phrase": endings[-1]["phrase"]})
         return out
 
     def advance(self) -> dict:
         """Advance one dialogue step; return the state AFTER it advanced.
 
-        `date` is present only when the in-game date changed during this step.
+        `date` is present only when the in-game date changed during this step, and
+        `ending` (text-matched TRUE END, AGENT.md 17/19.34) only when this step
+        displayed a configured judgment phrase — the engine keeps it in the status
+        for ~1s around the match so the poll cannot step over it.
         """
         before = self.state()
         self.send("ADVANCE")
@@ -224,7 +245,16 @@ class ClannadBridge:
 
         `skip_lines` holds every dialogue line collected during the fast-forward
         (from the moment skip started until the choice), plus the final state.
-        Stops at a real choice, a genuine VM halt, or when the budget elapses.
+        Stops at a real choice, at a text-matched **ending**, a genuine VM halt, or
+        when the budget elapses.
+
+        Ending signal (AGENT.md 17 / 19.34): `skip_lines[i].ending` is stamped on the
+        exact line whose text matched a configured TRUE END judgment phrase
+        (`endings_map.toml`), and `skip_endings` lists them as
+        `[{"index", "text", "name", "phrase"}]`; the top-level `ending`
+        (`{"name", "phrase"}`) carries the last one. A skip that reaches an ending
+        stops there with `skip_stop_reason="ending"` (a normal arrival, not a
+        timeout).
 
         The budget exists because the caller (an MCP client) has its own timeout: a
         skip that outlives it leaves the game fast-forwarding with nobody listening.
@@ -297,7 +327,7 @@ class ClannadBridge:
             out["skip_timeout"] = reason in ("time_budget", "step_budget")
             if out["skip_timeout"]:
                 out["skip_stopped"] = True
-            return self._attach_skip_dates(out)
+            return self._attach_skip_signals(out)
 
         # Budget elapsed with the fast-forward still running: stop the engine and
         # return a normal snapshot. The engine keeps the partial segment, so
@@ -314,7 +344,7 @@ class ClannadBridge:
         out["skip_timeout"] = True
         out["skip_stopped"] = True
         out["skip_stop_reason"] = out.get("skip_stop_reason") or "client_timeout"
-        return self._attach_skip_dates(out)
+        return self._attach_skip_signals(out)
 
     def save(self, slot: int) -> dict:
         return self.send(f"SAVE:{int(slot)}")

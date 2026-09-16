@@ -35,6 +35,7 @@ def get_status() -> dict:
     """读取当前状态：场景名、场景号、行号、是否阻塞/等待、存档槽数。
 
     这是"read 类"主入口，agent 每轮决策前先看它确认位置。
+    若刚刚命中结局判定句，返回里还会带 `ending`（引擎在命中前后约 1 秒窗口内发布）。
     """
     return _snapshot()
 
@@ -92,7 +93,13 @@ def get_recovered() -> dict:
 
 @mcp.tool()
 def advance() -> dict:
-    """推进对话（注入一次 Enter / 确认键）。返回推进后的状态。"""
+    """推进对话（注入一次 Enter / 确认键）。返回推进后的状态。
+
+    **结局信号**：当这一句正好命中 `endings_map.toml` 里的判定句时，
+    返回里带 `ending = {"name": "<结局名>", "phrase": "<判定句>"}`
+    （引擎在命中前后约 1 秒内持续发布该字段，轮询不会漏掉）。
+    字段缺失即"这一步没有到达结局"。
+    """
     return get_bridge().advance()
 
 
@@ -107,10 +114,17 @@ def skip_to_choice() -> dict:
     """快进到下一个选择点（跳过中间对白）。返回到达选择点时的状态。
 
     返回里带 `skip_lines`（本次快进收集到的全部对白）以及：
-    - `skip_stop_reason`：快进为什么停 —— `choice`（到达选择点）/`halted`（停机）/
-      `time_budget`、`step_budget`（引擎自身预算用尽，默认 40 秒）/`requested`（客户端要求停止）；
+    - `skip_stop_reason`：快进为什么停 —— `choice`（到达选择点）/`ending`（命中结局判定句）/
+      `halted`（停机）/`time_budget`、`step_budget`（引擎自身预算用尽，默认 40 秒）/
+      `requested`（客户端要求停止）；
     - `skip_timeout=true` 表示**不是**正常到达，而是预算用尽后被停止（此时可安全地再次调用 skip，
       已收集的对白仍会在 `skip_lines` 里返回，不会丢失）。
+
+    **结局信号**（文本匹配，见 AGENT.md 17）：快进途中哪一句命中了 `endings_map.toml` 的
+    判定句，就在**那一行**上标注 `skip_lines[i].ending = {"name","phrase"}`；
+    `skip_endings` 把它们收成 `[{"index": <skip_lines 下标>, "text", "name", "phrase"}]`，
+    顶层 `ending` 给出最后一个（即本段的结局）。命中结局时快进会**停在那一句**
+    （`skip_stop_reason="ending"`，属正常到达，不是超时）。
 
     **游戏内日期**：`skip_dates` 给出本次快进跨过的日期及其**确切位置**——
     每项是 `{"index": <skip_lines 下标>, "month","day","weekday","text"}`；

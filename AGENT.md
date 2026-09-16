@@ -540,7 +540,10 @@ TRUE END 结束一定会：播放 ED → 获得光玉 → 返回标题（成就�
 - 文本匹配是当前唯一被验证可行、用户认可的结局判定方式。
 
 ### 17.8 下一步
-- [ ] **阶段4 MCP Server（stdio）**：封装 `clannad_ctl` 状态/控制 + 文本匹配结局。这是主线目标。
+- [x] **阶段4 MCP Server（stdio）**：封装 `clannad_ctl` 状态/控制 + 文本匹配结局。这是主线目标。
+      **结局信号已落实到 MCP**：`advance` 返回顶层 `ending`，`skip` 在 `skip_lines` 的**对应台词**上
+      标注 `ending`、另给 `skip_endings`/顶层 `ending`，并在命中判定句处**停下**
+      （`skip_stop_reason="ending"`）—— 见 **19.34**。
 - [ ] （可选增强）窗口态引擎跑真实对白验证文本判定在真实对话下触发。
 - [ ] （独立项）`_cl_forclannad` include-call 实参缺口（§16.2）若修好，可让 headless 顺畅走到选择点/SL，但非 MCP 阻塞。
 
@@ -1124,4 +1127,31 @@ RESULT: PASS
 | 默认预算连续 6 次 skip（每次到达选择点后 `choose(0)` 再 skip） | 19.0 / 8.7 / 11.4 / 4.8 / 9.2 / 4.0s，**最慢 19.0s**，全部 `skip_timeout=false`、返回后 `skip_active=false` ✓ |
 
 ⇒ 用户看到的"超时"主要是上面那个**客户端信号缺陷**（引擎早停了，客户端却死等兜底）；
-预算 60s≈客户端 60s 的默认值也一并修正为 40s，最坏情况现在约 40.5s 返回。
+预算 60s≈客户端 60s 的单一默认值也一并修正为 40s，最坏情况现在约 40.5s 返回。
+
+---
+
+## 19.34 结局（文本匹配）信号落实到 MCP：`advance` / `skip` 返回 `ending`（2026-09-15）
+
+**背景**：判定逻辑早在 §17 就实现于引擎（`endings_map.toml` + `match_ending`，每帧读对话窗文字），
+但只在状态 JSON 里以**单帧**形式出现（`reported_endings` 去重后只发布一次），MCP 侧既没解析、
+也没在 `skip_lines` 上定位，客户端基本拿不到。
+
+**改动**：
+
+| 侧 | 改动 |
+|---|---|
+| 引擎 | 命中后把 `ending` **保留约 1 秒（60 帧）**再撤（与 `date` 同机制），轮询不再漏掉单帧字段 |
+| 引擎 | `skip_lines_json` 在**命中判定句的那一行**加 `"ending":{"name","phrase"}`（同一分段内每句只标一次）；`skip_stop_reason` 新增 **`ending`**：快进命中结局判定句即**停在那一句**（判句本就是 TRUE END 前最后一句，继续跑只会冲进 ED/标题） |
+| `bridge.py` | `_poll_state` 把中途出现过的 `ending` 并入 `seen`；`_attach_skip_signals()` 由 `skip_lines` 派生 `skip_endings=[{"index","text","name","phrase"}]`，并把最后一个同时放到**顶层 `ending`** |
+| `clannad_mcp.py` | `advance` / `skip_to_choice` / `get_status` docstring 写明结局字段与 `ending` 停止原因；`skip` 的 `ending` 属**正常到达**（`skip_timeout=false`） |
+
+**验证**（真实引擎 + 桥，`--bridge --auto-start`；用临时判定句表把"结局"设在序章前几句，便于确定性触发）：
+
+| 场景 | 结果 |
+|---|---|
+| 真表（游戏目录 `endings_map.toml`） | `[engine] loaded 11 ending phrase(s)` ✓，且序章前 3 次 advance **无假阳性**（`ending=null`）✓ |
+| `advance`（首句即判定句） | 起始状态就带 `ending={"name":"测试结局 早","phrase":"一望无际的白色世界…"}`，`advance` 返回同字段 ✓ |
+| `skip`（判定句在快进途中） | 3.8s 停下，`reason=ending`、`skip_timeout=false`、82 行；`skip_lines[81].ending={"name":"测试结局 B","phrase":"似乎是没料到身旁会有人。"}`、`skip_endings[0].index=81`、顶层 `ending` 一致 ✓ |
+
+⇒ 现在无论 `advance` 单步还是 `skip` 整段，都能在**对应台词**上拿到结局信号，且 skip 会停在结局那一句。
