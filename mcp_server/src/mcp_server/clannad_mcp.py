@@ -19,9 +19,9 @@ from mcp_server.bridge import get_bridge
 mcp = MCPServer(
     "clannad-mcp",
     instructions=(
-        "CLANNAD（蒸汽中文版）实时控制。先 get_status / get_dialogue 看当前所在；"
-        "需要推进时用 advance；出现选项时 get_choices 读然后用 choose 选择；"
-        "需要回退/做分支时用 save/load；想稳定拿到选项可先 skip_to_choice。"
+        "CLANNAD（Steam中文版）实时控制。先 get_status / get_dialogue 看当前所在；"
+        "需要推进时用 advance/skip_to_choice；出现选项时 get_choices 读然后用 choose 选择；"
+        "需要回退/做分支时用 save/load。"
     ),
 )
 
@@ -35,7 +35,7 @@ def get_status() -> dict:
     """读取当前状态：场景名、场景号、行号、是否阻塞/等待、存档槽数。
 
     这是"read 类"主入口，agent 每轮决策前先看它确认位置。
-    若刚刚命中结局判定句，返回里还会带 `ending`（引擎在命中前后约 1 秒窗口内发布）。
+    若刚刚命中结局判定句，返回里还会带 `ending`。
     """
     return _snapshot()
 
@@ -65,7 +65,6 @@ def get_choices() -> list[str]:
 def get_save_list() -> dict:
     """列出存档：最大槽位数(save_count)、当前已用槽数(save_used)、已占用槽索引列表。
 
-    已用槽 = 磁盘上实际存在的存档（来自 savedata_zh 目录）。
     """
     st = _snapshot()
     return {
@@ -93,12 +92,10 @@ def get_recovered() -> dict:
 
 @mcp.tool()
 def advance() -> dict:
-    """推进对话（注入一次 Enter / 确认键）。返回推进后的状态。
+    """推进对话（注入一次 Enter / 确认键）。返回推进后的状态。推荐使用 skip_to_choice 而不是 advance 多次。
 
     **结局信号**：当这一句正好命中 `endings_map.toml` 里的判定句时，
     返回里带 `ending = {"name": "<结局名>", "phrase": "<判定句>"}`
-    （引擎在命中前后约 1 秒内持续发布该字段，轮询不会漏掉）。
-    字段缺失即"这一步没有到达结局"。
     """
     return get_bridge().advance()
 
@@ -111,7 +108,7 @@ def choose(idx: int) -> dict:
 
 @mcp.tool()
 def skip_to_choice() -> dict:
-    """快进到下一个选择点（跳过中间对白）。返回到达选择点时的状态。
+    """快进到下一个选择点。返回到达选择点时的状态及收集到的全部对白。推荐使用 skip_to_choice 而不是 advance 多次。
 
     返回里带 `skip_lines`（本次快进收集到的全部对白）以及：
     - `skip_stop_reason`：快进为什么停 —— `choice`（到达选择点）/`ending`（命中结局判定句）/
@@ -145,11 +142,6 @@ def load(slot: int) -> dict:
     """读取存档槽 slot。返回读档后的状态。"""
     return get_bridge().load(slot)
 
-
-@mcp.tool()
-def jump(scene: str) -> dict:
-    """直接跳转某场景（按场景名）。谨慎使用，返回跳转后的状态。"""
-    return get_bridge().jump(scene)
 
 
 if __name__ == "__main__":
