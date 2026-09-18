@@ -36,7 +36,7 @@ uv tool install clannad-mcp     # 常驻安装（命令：clannad-mcp）
 ## 工具
 
 `get_status` · `get_dialogue` · `get_choices` · `advance` · `choose` ·
-`skip_to_choice` · `save` · `load` · `jump` · `get_save_list` · `get_recovered`
+`skip_to_choice` · `save` · `load` · `get_save_list` · `get_recovered`
 
 ## 目录
 

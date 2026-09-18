@@ -1,22 +1,36 @@
 """
 MCP Server for CLANNAD (Steam CN) — real-time control over the plan-B TCP bridge.
 
-The engine (siglus_engine.exe) must be running in a window with:
-    CLANNAD_BRIDGE=1
-    CLANNAD_BRIDGE_PORT_FILE=<path matching bridge.PORT_FILE>
+The engine (siglus_engine.exe) must be running in a window, started with --bridge
+(the repository's run_engine.cmd does that). It writes its TCP port into
+%TEMP%\\clannad_bridge.port, which this client reads by default, so no environment
+variable is needed; set CLANNAD_BRIDGE_PORT_FILE on BOTH sides only to move that file.
 
 The session is continuous (the engine keeps running and rendering), so the model
 "plays" CLANNAD live instead of restarting headlessly each call.
-
 """
 from __future__ import annotations
+
+from importlib.metadata import PackageNotFoundError, version as _dist_version
 
 from mcp.server import MCPServer
 
 from mcp_server.bridge import get_bridge
 
+
+def _server_version() -> str:
+    """Our distribution version, so hosts can show which build they run."""
+    try:
+        return _dist_version("clannad-mcp")
+    except PackageNotFoundError:  # running from a source tree without an install
+        return "0.0.0+source"
+
+
 mcp = MCPServer(
     "clannad-mcp",
+    title="CLANNAD MCP",
+    version=_server_version(),
+    website_url="https://github.com/5h1nnN/can-ai-beat-clannad",
     instructions=(
         "CLANNAD（Steam中文版）实时控制。先 get_status / get_dialogue 看当前所在；"
         "需要推进时用 advance/skip_to_choice；出现选项时 get_choices 读然后用 choose 选择；"

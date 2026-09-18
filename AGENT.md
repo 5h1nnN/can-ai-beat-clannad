@@ -1214,3 +1214,21 @@ E:\7_projects\clannad_mcp\siglus_rs\target\release\siglus_engine.exe `
 修法：连接失败时**丢弃缓存端口 → 重读端口文件 → 重试一次**，仍失败则抛带诊断的 `RuntimeError`；
 新增无等待读取 `_read_port_now()`（`_read_port()` 复用它）。实测：持有旧端口 8666 的实例重试后自动连上 10827 ✓。
 
+### 20.1 后续变更：入口改为 PyPI + uvx，工具 11 → 10（2026-09-18）
+
+- MCP 已发布到 PyPI：**`clannad-mcp`**（0.1.0 → 0.1.2，owner `shinn`，`License-Expression: MPL-2.0`）。
+- dsh 的入口从 venv 脚本改成**从 PyPI 走 uvx**：
+  `command: 'C:\Users\shin1\.local\bin\uvx.exe'`、`args: ['clannad-mcp']`、`rev: 3`。
+- **工具数 11 → 10**：`jump` 已从 `clannad_mcp.py` 移除（提交 `ea773e7`）；
+  `tools/list` = `get_status`/`get_dialogue`/`get_choices`/`get_save_list`/`get_recovered` +
+  `advance`/`choose`/`skip_to_choice`/`save`/`load`。
+- **端口文件两端默认一致**：`%TEMP%\clannad_bridge.port`（引擎经 `run_engine.cmd` 写、客户端默认读），
+  所以 dsh 的 `env` 不必再写 `CLANNAD_BRIDGE_PORT_FILE`；`CLANNAD_SKIP_TIMEOUT` 作为显式默认值保留。
+- `serverInfo.version` 改为读 `importlib.metadata.version("clannad-mcp")`（源码树里回退
+  `0.0.0+source`），并一起上报 `title` / `website_url`。
+- **踩坑记录（重要）**：MCP 服务若从 venv 启动，运行中的进程会锁住
+  `.venv\Scripts\mcp-server.exe`，于是 `uv sync` / `uv run` 报
+  `拒绝访问 (os error 5)` / `文件被占用`。解法有二：① dsh 入口改用 uvx（PyPI 版），venv 只用于开发；
+  ② 开发时用 `uv run --no-sync ...`，或先停掉 dsh 的 MCP 服务再 `uv sync`。
+  排查方法：`Get-CimInstance Win32_Process | ? CommandLine -match 'mcp-server'` 看谁持有。
+
