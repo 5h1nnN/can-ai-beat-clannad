@@ -132,6 +132,17 @@ wheels = [
 ]
 
 [[package]]
+name = "clannad-mcp"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "mcp", extra = ["cli"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "mcp", extras = ["cli"], specifier = ">=2.2.0" }]
+
+[[package]]
 name = "click"
 version = "8.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -325,17 +336,6 @@ cli = [
     { name = "python-dotenv" },
     { name = "typer" },
 ]
-
-[[package]]
-name = "mcp-server"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "mcp", extra = ["cli"] },
-]
-
-[package.metadata]
-requires-dist = [{ name = "mcp", extras = ["cli"], specifier = ">=2.2.0" }]
 
 [[package]]
 name = "mcp-types"

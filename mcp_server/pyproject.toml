@@ -1,19 +1,30 @@
 [project]
-name = "mcp-server"
+name = "clannad-mcp"
 version = "0.1.0"
-description = "Add your description here"
+description = "MCP server for real-time control of CLANNAD (Steam ZH) running in the siglus_engine reimplementation"
 readme = "README.md"
-authors = [
-    { name = "clannad-mcp", email = "clannad-mcp@local" }
-]
 requires-python = ">=3.12"
+keywords = ["clannad", "mcp", "visual-novel", "siglus", "automation", "model-context-protocol"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Environment :: Console",
+    "Topic :: Games/Entertainment",
+    "Intended Audience :: End Users/Desktop",
+]
 dependencies = [
     "mcp[cli]>=2.2.0",
 ]
 
 [project.scripts]
+clannad-mcp = "mcp_server:main"
+# Kept so existing host configs that call `mcp-server` keep working.
 mcp-server = "mcp_server:main"
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
+
+# The import package stays `mcp_server` (src/mcp_server) while the distribution is
+# called clannad-mcp, so tell the build backend which module to ship.
+[tool.uv.build-backend]
+module-name = "mcp_server"
