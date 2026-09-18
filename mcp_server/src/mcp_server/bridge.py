@@ -56,21 +56,29 @@ def _candidate_port_files() -> list[str]:
     return candidates
 
 
+def _read_port_now() -> int | None:
+    """Read the port file once, without waiting: the current port, or None."""
+    for path in _candidate_port_files():
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    raw = f.read().strip()
+                if raw:
+                    return int(raw)
+            except (OSError, ValueError):
+                pass
+    return None
+
+
 def _read_port(timeout: float = 30.0) -> int:
     """Wait for the engine to write a port file, then return the port."""
     import time
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        for path in _candidate_port_files():
-            if os.path.exists(path):
-                try:
-                    with open(path, "r", encoding="utf-8", errors="replace") as f:
-                        raw = f.read().strip()
-                    if raw:
-                        return int(raw)
-                except (OSError, ValueError):
-                    pass
+        port = _read_port_now()
+        if port is not None:
+            return port
         time.sleep(0.2)
     raise RuntimeError(
         "engine didn't write a port file within {}s; "
@@ -99,12 +107,23 @@ class ClannadBridge:
         self.port = port
         self._sock: socket.socket | None = None
 
+    def _connect(self) -> tuple[socket.socket, int]:
+        """Open one connection, resolving the port from the port file if needed."""
+        port = self.port if self.port is not None else _read_port()
+        return socket.create_connection((self.host, port), timeout=10.0), port
+
     def send(self, cmd: str) -> dict:
         """Send one command line, read one JSON status line, return parsed dict.
 
         The engine handles each connection as one request: it reads a single
         command, replies, then closes the connection.  So we open a fresh
         connection per command.
+
+        The engine picks a NEW ephemeral port on every start and rewrites the
+        port file, so a cached port goes stale the moment the engine restarts
+        (the MCP server itself keeps running across that).  A failed connect
+        therefore drops the cached port, re-reads the port file, and retries
+        exactly once before giving up.
         """
         # Close any stale socket from a previous request; the engine closes the
         # connection after replying, so reusing it would block/fail.
@@ -114,9 +133,22 @@ class ClannadBridge:
             except OSError:
                 pass
             self._sock = None
-        if self.port is None:
-            self.port = _read_port()
-        sock = socket.create_connection((self.host, self.port), timeout=10.0)
+        try:
+            sock, port = self._connect()
+        except OSError as first:
+            stale = self.port
+            self.port = None
+            try:
+                sock, port = self._connect()
+            except OSError as second:
+                self.port = None
+                raise RuntimeError(
+                    "cannot reach the CLANNAD engine bridge on 127.0.0.1 "
+                    f"(cached port {stale}, port file now {_read_port_now()!r}): {second}. "
+                    "Start siglus_engine.exe with --bridge / CLANNAD_BRIDGE=1 "
+                    "and CLANNAD_BRIDGE_PORT_FILE pointing at the same file."
+                ) from second
+        self.port = port
         self._sock = sock
         try:
             with sock.makefile("rwb", buffering=0) as f:

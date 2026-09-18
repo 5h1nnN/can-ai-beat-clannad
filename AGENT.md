@@ -1155,3 +1155,62 @@ RESULT: PASS
 | `skip`（判定句在快进途中） | 3.8s 停下，`reason=ending`、`skip_timeout=false`、82 行；`skip_lines[81].ending={"name":"测试结局 B","phrase":"似乎是没料到身旁会有人。"}`、`skip_endings[0].index=81`、顶层 `ending` 一致 ✓ |
 
 ⇒ 现在无论 `advance` 单步还是 `skip` 整段，都能在**对应台词**上拿到结局信号，且 skip 会停在结局那一句。
+
+---
+
+## 20. 接入 DeepSeek Harness（dsh）的 MCP 客户端（2026-09-17）
+
+**目标**：让 dsh（本机 Web GUI，`http://127.0.0.1:3080`）直接把这些工具当原生工具调用，
+名字是 `mcp__clannad__<tool>`（11 个：`get_status`/`get_dialogue`/`get_choices`/`get_save_list`/`get_recovered` + `advance`/`choose`/`skip_to_choice`/`save`/`load`/`jump`）。
+
+**机制**：dsh 用插件 `@deepseek-ai/dsh-mcp-client` 桥接外部 MCP server（只桥接 tools；
+resources/prompts 无消费方）。**一行配置一个 server**，放在 **profile 的用户 patch 层**
+`$DSH_HOME/profiles/<profile>/cordis.patch.yml`（本机 = `C:\Users\shin1\.dsh\profiles\web\cordis.patch.yml`），
+用 `- insert:` 追加一行；`serverName` 决定工具名前缀。
+
+```yaml
+- insert:
+    - id: mcp-clannad
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: clannad
+        transport: stdio            # 本地子进程；服务式则用 streamable-http + url/headers
+        command: 'E:\7_projects\clannad_mcp\mcp_server\.venv\Scripts\mcp-server.exe'
+        args: []
+        cwd: 'E:\7_projects\clannad_mcp'
+        env:
+          CLANNAD_BRIDGE_PORT_FILE: 'E:\7_projects\clannad_mcp\clannad_bridge.port'
+          CLANNAD_SKIP_TIMEOUT: '45'
+        toolCallTimeoutMs: 120000   # skip 合法可占 ~40s（引擎预算）+ 客户端兜底，留余量
+        failOnStartupError: false   # 引擎没起也让 dsh 正常启动
+```
+
+要点：
+- stdio 子进程环境 = **洗过的环境**（丢 `*KEY/PASSWORD/SECRET/TOKEN*` 与 `DSH_*`）**再叠 `env`**，所以桥的端口文件路径必须显式给出。
+- **`patchReload: live`**：改 `cordis.patch.yml` 即时生效。但只有**配置内容变化**才会拆掉重建 server 进程——
+  只改注释不触发；本文件留了 `# rev: N` 注释行，改它一次即强制 in-place 重载（实测重建进程）。
+- MCP server **不依赖引擎即可启动**（桥是惰性连接，`get_bridge()` 首次调用才读端口文件），
+  所以 dsh 启动时不会因为游戏没开而失败；引擎没起时工具调用返回连接错误。
+- `@deepseek-ai/dsh-mcp-client` 已随 profiles 的 `node_modules` 就位，无需 `dsh plugin add`。
+
+**运行顺序**：先引擎（窗口态 + 桥），再让 dsh 的 MCP 服务连它：
+
+```powershell
+E:\7_projects\clannad_mcp\siglus_rs\target\release\siglus_engine.exe `
+  --project-dir E:\SteamLibrary\steamapps\common\CLANNAD --bridge --auto-start
+```
+
+引擎每次启动张**新的临时端口**并重写 `clannad_bridge.port`。
+
+**验证**（本次实测）：
+- `diagnostics/scripts/probe_mcp_stdio.py`：`initialize` + `tools/list` = **11 工具**；
+  `<tool>` 直接 `tools/call` 打真引擎（`get_status` → `scene seen6900 line 17`，中文列正常）。
+- dsh 内 `mcp__clannad__get_status` / `get_dialogue` / `get_save_list` 均返回实时状态（`save_used=8`，槽 0–7）。
+- `node <dsh>\lib\bin.js --profile web --dump-config` 确认该行合成进有效配置（`exit=0`）。
+
+**顺带修复（`bridge.py`）——端口缓存失效 bug**：
+`ClannadBridge` 首次解析端口后**永久缓存**；引擎重启换端口后，MCP 进程（跨引擎重启常驻）
+会一直连旧端口 → dsh 里每次调用都 `Error executing tool ...`（本次就是这样踩到的：8666 → 10827）。
+修法：连接失败时**丢弃缓存端口 → 重读端口文件 → 重试一次**，仍失败则抛带诊断的 `RuntimeError`；
+新增无等待读取 `_read_port_now()`（`_read_port()` 复用它）。实测：持有旧端口 8666 的实例重试后自动连上 10827 ✓。
+
