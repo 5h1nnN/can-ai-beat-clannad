@@ -8,7 +8,6 @@ The engine (siglus_engine.exe) must be running in a window with:
 The session is continuous (the engine keeps running and rendering), so the model
 "plays" CLANNAD live instead of restarting headlessly each call.
 
-Interface mirrors AGENT.md §5.1 (read tools) and §5.2 (control tools).
 """
 from __future__ import annotations
 
@@ -133,13 +132,18 @@ def skip_to_choice() -> dict:
 
 @mcp.tool()
 def save(slot: int) -> dict:
-    """写入指定存档槽 slot。返回存后的状态。"""
+    """写入指定存档槽 slot。返回存后的状态。
+
+    不要在选项处下一句位置save，否则会出现无法推进的bug。推荐在选项处时先save再choose。
+    """
     return get_bridge().save(slot)
 
 
 @mcp.tool()
 def load(slot: int) -> dict:
-    """读取存档槽 slot。返回读档后的状态。"""
+    """读取存档槽 slot。返回读档后的状态。
+    由于引擎缺陷，如果load到选项处，需要advance一次才能choose。
+    """
     return get_bridge().load(slot)
 
 

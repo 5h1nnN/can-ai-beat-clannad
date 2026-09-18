@@ -1,6 +1,6 @@
 # CLANNAD MCP
 
-让 AI agent 直接玩 CLANNAD（Steam 中文版）。
+让 AI agent 游玩 CLANNAD（Steam 中文版）。
 
 由两部分组成：
 
@@ -9,9 +9,7 @@
 | **引擎** `siglus_engine.exe` | 适配CLANNAD Steam的SiglusEngine （修改自[xmoezzz/siglus_rs](https://github.com/xmoezzz/siglus_rs)） | `siglus_rs/`（产物 `target/release/siglus_engine.exe`） |
 | **MCP 服务** `clannad-mcp` | stdio MCP server，把桥封装成 MCP 工具（`advance` / `choose` / `skip_to_choice` …） | `mcp_server/`（Python 包） |
 
-> 本项目**不包含任何游戏资源**。你必须有 CLANNAD Steam 中文版。
-
----
+> 本项目不包含任何游戏资源。你必须有 CLANNAD Steam 中文版。
 
 ## 1. 前置条件
 
@@ -19,8 +17,6 @@
 - 正版 CLANNAD（Steam 中文版）已安装，例如 `E:\SteamLibrary\steamapps\common\CLANNAD`
 - 跑 MCP 服务需要 Python ≥ 3.12；推荐装 [uv](https://docs.astral.sh/uv/)（`winget install astral-sh.uv` 或官方脚本）
 - 只有在你想自己编译引擎时才需要 Rust 工具链（普通用户直接下载 `siglus_engine.exe` 即可）
-
----
 
 ## 2. 快速开始（3 步）
 
@@ -124,20 +120,17 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 }
 ```
 
----
-
 ## 3. 工具一览
 
 | 工具 | 用途 |
 |---|---|
-| `get_status` | 当前位置（场景/行号/是否阻塞/存档槽…），决策前先看它 |
+| `get_status` | 当前位置（场景/行号/是否阻塞/存档槽…） |
 | `get_dialogue` | 当前说话人 + 对白文本 + 是否有选项 |
 | `get_choices` | 当前选项列表（`choose` 的下标就是它的下标，0 起） |
 | `advance` | 推进一句（注一次 Enter）；命中结局判定句时返回 `ending` |
 | `choose(idx)` | 在选项处选第 `idx` 项 |
 | `skip_to_choice` | 快进：可跨多天、按行标注日期与结局；到选项/结局/预算停下 |
 | `save(slot)` / `load(slot)` | 存/读档（槽位与游戏内一致，会覆盖该槽） |
-| `jump(scene)` | 直接跳到某场景（调试/回退用） |
 | `get_save_list` | 槽位上限与已占用槽 |
 | `get_recovered` | 引擎容错的脚本错误站点清单（排查用） |
 
@@ -148,8 +141,6 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 - `skip_timeout`：`true` 表示"预算用尽被停"；此时可直接再调一次 `skip_to_choice` 接着快进
 - `date` / `skip_dates`：游戏内日期变化及其确切行号
 - `ending` / `skip_endings`：命中的结局（名字 + 判定句）及其确切行号
-
----
 
 ## 4. 环境变量
 
@@ -163,31 +154,11 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 | `SIGLUS_VM_STRICT=1` | 脚本错误不再容错，遇到就停机（排查引擎 bug 用） | 关 |
 | `SG_SKIP_TRACE=1` | 把快进决策写进 `skip_trace.log`（排查快进问题用） | 关 |
 
----
-
 ## 5. 已知限制
 
 在有选择枝的下一句存档后读档可能读出一个"推不动"的状态，这是当前引擎的一个遗留问题
 
----
-
 ## 6. 许可与免责
 
-- 本项目以 **Mozilla Public License 2.0（MPL-2.0）** 发布，全文见 [`LICENSE`](LICENSE)
-- 项目地址：<https://github.com/5h1nnN/can-ai-beat-clannad>
 - 本项目不附带 CLANNAD 的任何游戏数据
-- 引擎fork自[xmoezzz/siglus_rs](https://github.com/xmoezzz/siglus_rs)，本项目的引擎子仓库：<https://github.com/5h1nnN/siglus_rs>
-
----
-
-## 7. 发布（PyPI）
-
-```powershell
-cd mcp_server
-uv build     # 产出 dist\clannad_mcp-0.1.0-py3-none-any.whl 与 .tar.gz（内含 LICENSE）
-uv publish   # 需要 PyPI API token：uv publish --token pypi-xxxx，或设环境变量 UV_PUBLISH_TOKEN
-```
-
-- 想先在测试库验证：`uv publish --publish-url https://test.pypi.org/legacy/`
-- 用户安装：`uvx clannad-mcp`（或 `uv tool install clannad-mcp` / `pipx install clannad-mcp`）
-- 包元数据（名称/版本/许可证/项目地址/入口点）都在 `mcp_server/pyproject.toml`
+- 引擎fork自[xmoezzz/siglus_rs](https://github.com/xmoezzz/siglus_rs)
