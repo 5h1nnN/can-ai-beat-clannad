@@ -4,16 +4,28 @@ version = "0.1.0"
 description = "MCP server for real-time control of CLANNAD (Steam ZH) running in the siglus_engine reimplementation"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "5h1nnN", email = "5h1nnN@users.noreply.github.com" },
+]
 keywords = ["clannad", "mcp", "visual-novel", "siglus", "automation", "model-context-protocol"]
 classifiers = [
     "Programming Language :: Python :: 3.12",
     "Environment :: Console",
     "Topic :: Games/Entertainment",
     "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
 ]
 dependencies = [
     "mcp[cli]>=2.2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/5h1nnN/can-ai-beat-clannad"
+Repository = "https://github.com/5h1nnN/can-ai-beat-clannad"
+Issues = "https://github.com/5h1nnN/can-ai-beat-clannad/issues"
+"Engine (siglus_rs)" = "https://github.com/5h1nnN/siglus_rs"
 
 [project.scripts]
 clannad-mcp = "mcp_server:main"

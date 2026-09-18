@@ -52,3 +52,15 @@ src/mcp_server/
 |---|---|---|
 | `CLANNAD_BRIDGE_PORT_FILE` | 端口文件路径；想放到别处时两端都要设成同一个值 | `%TEMP%\clannad_bridge.port`（另会探测检出目录、当前目录及其父目录下的 `clannad_bridge.port`） |
 | `CLANNAD_SKIP_TIMEOUT` | `skip_to_choice` 的兜底等待秒数；须小于 MCP 宿主超时 | `45` |
+
+## 许可
+
+Mozilla Public License 2.0（MPL-2.0），全文见 [`LICENSE`](LICENSE)。
+项目地址：<https://github.com/5h1nnN/can-ai-beat-clannad>
+
+## 发布
+
+```powershell
+uv build     # dist\clannad_mcp-0.1.0-py3-none-any.whl / .tar.gz（含 LICENSE）
+uv publish   # 需要 PyPI token：--token pypi-xxxx 或 UV_PUBLISH_TOKEN
+```

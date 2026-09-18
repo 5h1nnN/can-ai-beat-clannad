@@ -155,7 +155,7 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 
 | 变量 | 作用 | 默认 |
 |---|---|---|
-| `CLANNAD_BRIDGE_PORT_FILE` | 控制桥端口文件；引擎与 MCP 必须一致 | 引擎：进程当前目录下 `clannad_bridge.port` |
+| `CLANNAD_BRIDGE_PORT_FILE` | 控制桥端口文件；引擎与 MCP 必须一致 | 两边默认都是 `%TEMP%\clannad_bridge.port`（用 `run_engine.cmd` 启动引擎时；手敲命令启动引擎时它写在引擎的工作目录） |
 | `SIGLUS_LANGUAGE` | 文本语言（中文版用 `ZH`） | 自动 |
 | `CLANNAD_SKIP_BUDGET_MS` | 单次快进的墙钟预算（毫秒）；引擎到点自停 | `40000` |
 | `CLANNAD_SKIP_TIMEOUT` | MCP 侧兜底等待（秒），只用于引擎无响应的异常情况；必须小于 MCP 宿主自身的超时 | `45` |
@@ -173,5 +173,21 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 
 ## 6. 许可与免责
 
+- 本项目以 **Mozilla Public License 2.0（MPL-2.0）** 发布，全文见 [`LICENSE`](LICENSE)
+- 项目地址：<https://github.com/5h1nnN/can-ai-beat-clannad>
 - 本项目不附带 CLANNAD 的任何游戏数据
-- 引擎fork自[xmoezzz/siglus_rs](https://github.com/xmoezzz/siglus_rs)
+- 引擎fork自[xmoezzz/siglus_rs](https://github.com/xmoezzz/siglus_rs)，本项目的引擎子仓库：<https://github.com/5h1nnN/siglus_rs>
+
+---
+
+## 7. 发布（PyPI）
+
+```powershell
+cd mcp_server
+uv build     # 产出 dist\clannad_mcp-0.1.0-py3-none-any.whl 与 .tar.gz（内含 LICENSE）
+uv publish   # 需要 PyPI API token：uv publish --token pypi-xxxx，或设环境变量 UV_PUBLISH_TOKEN
+```
+
+- 想先在测试库验证：`uv publish --publish-url https://test.pypi.org/legacy/`
+- 用户安装：`uvx clannad-mcp`（或 `uv tool install clannad-mcp` / `pipx install clannad-mcp`）
+- 包元数据（名称/版本/许可证/项目地址/入口点）都在 `mcp_server/pyproject.toml`
