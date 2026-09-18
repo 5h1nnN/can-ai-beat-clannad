@@ -28,28 +28,45 @@ import json
 import os
 import socket
 
-# File the engine writes the ephemeral port into.  Start the engine with
-# CLANNAD_BRIDGE=1 and CLANNAD_BRIDGE_PORT_FILE=<this path>.
-_DEFAULT_PORT_FILE = r"E:\7_projects\clannad_mcp\clannad_bridge.port"
+# Port file the engine writes its ephemeral port into and this client reads back.
+#
+# Both halves agree WITHOUT configuration: `run_engine.cmd` starts the engine with
+# CLANNAD_BRIDGE_PORT_FILE=%TEMP%\clannad_bridge.port, and this client defaults to the
+# same per-user path.  Set CLANNAD_BRIDGE_PORT_FILE (engine AND client) only if you
+# want the file somewhere else.
+def _default_port_file() -> str:
+    import tempfile
+
+    temp = os.environ.get("TEMP") or os.environ.get("TMP") or tempfile.gettempdir()
+    return os.path.join(temp, "clannad_bridge.port")
+
+
+#: Legacy location: a `clannad_bridge.port` in the checkout root, where an engine
+#: started by hand from the repository lands.  Derived from this file's path so it
+#: works for any checkout location (mcp_server/src/mcp_server/bridge.py -> repo).
+_LEGACY_PORT_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    "clannad_bridge.port",
+)
+
+_DEFAULT_PORT_FILE = _default_port_file()
 PORT_FILE = os.environ.get("CLANNAD_BRIDGE_PORT_FILE", _DEFAULT_PORT_FILE)
 
 
 def _candidate_port_files() -> list[str]:
     """All the places the engine may have written its port file.
 
-    The engine default is a *relative* `clannad_bridge.port` in its own current
-    working directory, while this client default is the absolute
-    `_DEFAULT_PORT_FILE`.  They only coincide when the engine is launched from
-    `E:\\7_projects\\clannad_mcp`.  To be robust, probe the explicitly configured
-    path first, then the absolute default, then `clannad_bridge.port` in the
-    client's current working directory (and its parent), so a separate-terminal
-    launch in any directory is still found.
+    Probed in order: the configured path (env or per-user default), then the
+    checkout-local file, then `clannad_bridge.port` in this process's current
+    directory and its parent -- so an engine started from a terminal in any
+    directory is still found.
     """
     candidates: list[str] = []
     if PORT_FILE:
         candidates.append(PORT_FILE)
-    if _DEFAULT_PORT_FILE not in candidates:
-        candidates.append(_DEFAULT_PORT_FILE)
+    for extra in (_DEFAULT_PORT_FILE, _LEGACY_PORT_FILE):
+        if extra not in candidates:
+            candidates.append(extra)
     cwd = os.path.abspath(os.getcwd())
     for d in (cwd, os.path.dirname(cwd)):
         candidates.append(os.path.join(d, "clannad_bridge.port"))

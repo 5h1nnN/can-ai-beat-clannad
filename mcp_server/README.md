@@ -16,8 +16,9 @@ uv tool install clannad-mcp     # 常驻安装（命令：clannad-mcp）
 
 1. 引擎已在跑，并开了控制桥：
    `siglus_engine.exe --project-dir "<GAME_DIR>" --bridge --auto-start`
-2. 引擎与 MCP 使用**同一个**端口文件路径：
-   `CLANNAD_BRIDGE_PORT_FILE`（引擎写端口，MCP 读端口）
+   （仓库根的 `run_engine.cmd` 就是干这个的，只需改里面的 `GAME_DIR`）
+2. 端口文件两端一致 —— **默认已经一致**：引擎（经 `run_engine.cmd`）写
+   `%TEMP%\clannad_bridge.port`，本客户端也默认读这个文件，所以通常**不需要配任何环境变量**。
 
 ## MCP 宿主配置示例
 
@@ -26,10 +27,7 @@ uv tool install clannad-mcp     # 常驻安装（命令：clannad-mcp）
   "mcpServers": {
     "clannad": {
       "command": "uvx",
-      "args": ["clannad-mcp"],
-      "env": {
-        "CLANNAD_BRIDGE_PORT_FILE": "C:\\Users\\<你>\\AppData\\Local\\Temp\\clannad_bridge.port"
-      }
+      "args": ["clannad-mcp"]
     }
   }
 }
@@ -52,5 +50,5 @@ src/mcp_server/
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `CLANNAD_BRIDGE_PORT_FILE` | 端口文件路径，必须与引擎一致 | 若干候选路径（含当前目录的 `clannad_bridge.port`） |
+| `CLANNAD_BRIDGE_PORT_FILE` | 端口文件路径；想放到别处时两端都要设成同一个值 | `%TEMP%\clannad_bridge.port`（另会探测检出目录、当前目录及其父目录下的 `clannad_bridge.port`） |
 | `CLANNAD_SKIP_TIMEOUT` | `skip_to_choice` 的兜底等待秒数；须小于 MCP 宿主超时 | `45` |

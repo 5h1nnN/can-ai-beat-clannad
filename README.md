@@ -42,14 +42,13 @@ cargo build --release -p siglus_scene_vm
 
 ### 第 2 步：启动引擎
 
-把仓库里的 **`run_engine.cmd`** 放到 `siglus_engine.exe` 旁边，改开头两处路径，然后双击运行：
+把仓库里的 **`run_engine.cmd`** 放到 `siglus_engine.exe` 旁边，**只改一处**——开头的 `GAME_DIR`：
 
 ```bat
 set "GAME_DIR=E:\SteamLibrary\steamapps\common\CLANNAD"
-set "CLANNAD_BRIDGE_PORT_FILE=%TEMP%\clannad_bridge.port"
 ```
 
-它等价于：
+然后双击运行（端口文件、语言、快进预算它都替你设好了）。它等价于：
 
 ```powershell
 $env:CLANNAD_BRIDGE_PORT_FILE = "$env:TEMP\clannad_bridge.port"
@@ -60,13 +59,16 @@ $env:SIGLUS_LANGUAGE = "ZH"
 - `--bridge`：开启控制桥（MCP 必需）
 - `--auto-start`：自动从标题进 New Game 到第一句（省得手动点）
 - **引擎窗口必须保持开着**（关掉窗口 = 退出）。可以把窗口最小化；不要用任务管理器结束它。
+- **端口文件不用你创建**：引擎启动时会把端口号写进 `%TEMP%\clannad_bridge.port`，MCP 默认也读同一个文件
+
+> 不用 `run_engine.cmd`、自己手敲命令也可以，那就照上面三行设好环境变量（建议始终给 `CLANNAD_BRIDGE_PORT_FILE` 一个绝对路径）。
 
 ### 第 3 步：把 MCP 服务接到你的 AI 客户端
 
 先装：
 
 ```powershell
-uvx clannad-mcp --help          # 直接跑（首次会自动下载；必须能被 MCP 宿主调用）
+uvx clannad-mcp --help          # 直接跑（首次会自动下载）
 # 或常驻安装：
 uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 ```
@@ -78,16 +80,31 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
   "mcpServers": {
     "clannad": {
       "command": "uvx",
+      "args": ["clannad-mcp"]
+    }
+  }
+}
+```
+
+**就这样，不需要配任何环境变量**：客户端默认读 `%TEMP%\clannad_bridge.port`，与 `run_engine.cmd` 写的是同一个文件。
+
+只有你想把端口文件放到别处时，才需要两边同时指定：
+
+```json
+{
+  "mcpServers": {
+    "clannad": {
+      "command": "uvx",
       "args": ["clannad-mcp"],
       "env": {
-        "CLANNAD_BRIDGE_PORT_FILE": "C:\\Users\\<你的用户名>\\AppData\\Local\\Temp\\clannad_bridge.port"
+        "CLANNAD_BRIDGE_PORT_FILE": "D:\\clannad-mcp\\bridge.port"
       }
     }
   }
 }
 ```
 
-**关键点：`CLANNAD_BRIDGE_PORT_FILE` 两边必须一致**（引擎写、MCP 读）。不设的话客户端只能碰运气去当前目录找 `clannad_bridge.port`。
+（放别处的话，`run_engine.cmd` 里的 `CLANNAD_BRIDGE_PORT_FILE` 也要改成同一个值。）
 
 不想用 `uvx` 也可以（从源码/本地 venv 跑）：
 
@@ -98,7 +115,6 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
       "command": "E:\\7_projects\\clannad_mcp\\mcp_server\\.venv\\Scripts\\python.exe",
       "args": ["-m", "mcp_server.clannad_mcp"],
       "env": {
-        "CLANNAD_BRIDGE_PORT_FILE": "C:\\Users\\<你的用户名>\\AppData\\Local\\Temp\\clannad_bridge.port",
         "PYTHONPATH": "E:\\7_projects\\clannad_mcp\\mcp_server\\src"
       }
     }
@@ -168,7 +184,7 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 
 | 变量 | 作用 | 默认 |
 |---|---|---|
-| `CLANNAD_BRIDGE_PORT_FILE` | 控制桥端口文件；**引擎与 MCP 必须一致** | 引擎：进程当前目录下 `clannad_bridge.port` |
+| `CLANNAD_BRIDGE_PORT_FILE` | 控制桥端口文件；**引擎与 MCP 必须一致**（一般不用设，两边默认都是 `%TEMP%\clannad_bridge.port`） | `%TEMP%\clannad_bridge.port` |
 | `SIGLUS_LANGUAGE` | 文本语言（中文版用 `ZH`） | 自动 |
 | `CLANNAD_SKIP_BUDGET_MS` | 单次快进的墙钟预算（毫秒）；引擎到点自停 | `40000` |
 | `CLANNAD_SKIP_TIMEOUT` | MCP 侧兜底等待（秒），只用于引擎无响应的异常情况；**必须小于 MCP 宿主自身的超时** | `45` |
@@ -190,7 +206,8 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| MCP 报 "engine didn't write a port file within 30s" | 引擎没在跑，或两边 `CLANNAD_BRIDGE_PORT_FILE` 不一致，或路径写错（用绝对路径） |
+| MCP 报 "engine didn't write a port file within 30s" | 引擎没在跑；或引擎与 MCP 的端口文件路径不一致；或引擎是手敲命令启动的（端口文件落在它自己的工作目录）——用 `run_engine.cmd` 最省事 |
+| 引擎重启后 MCP 还能用吗 | 能：引擎每次启动换新端口并重写端口文件，MCP 连接失败时会丢掉缓存端口、重读文件并重试一次。引擎退出后端口文件会留着（内容过期），重启引擎会覆盖它 |
 | `skip_to_choice` 很久才返回 / 调用方超时 | 引擎预算 `CLANNAD_SKIP_BUDGET_MS` 必须**明显小于** MCP 宿主的超时；宿主超时 60s 时用默认 40s 即可 |
 | `skip` 返回 0 行、`skip_timeout=true` | 到了推不动的画面（标题/系统菜单只认鼠标点击）。用 `advance` / `load` / `jump`，不要在菜单上快进 |
 | 同一判定句每次 skip 都停在同一句 | 目前判定句是"每次都停"。用一次 `advance` 过去，或干脆不把它当必停点 |
