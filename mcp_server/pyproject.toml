@@ -15,7 +15,6 @@ classifiers = [
     "Environment :: Console",
     "Topic :: Games/Entertainment",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
 ]
 dependencies = [
     "mcp[cli]>=2.2.0",
