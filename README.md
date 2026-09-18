@@ -14,7 +14,7 @@
 ## 1. 前置条件
 
 - Windows 10/11（引擎是窗口程序，用 DirectX/GPU 正常渲染）
-- 正版 CLANNAD（Steam 中文版）已安装，例如 `E:\SteamLibrary\steamapps\common\CLANNAD`
+- CLANNAD（Steam 中文版）已安装
 - 跑 MCP 服务需要 Python ≥ 3.12；推荐装 [uv](https://docs.astral.sh/uv/)（`winget install astral-sh.uv` 或官方脚本）
 - 只有在你想自己编译引擎时才需要 Rust 工具链（普通用户直接下载 `siglus_engine.exe` 即可）
 
@@ -49,7 +49,7 @@ cargo build --release -p siglus_scene_vm
 set "GAME_DIR=path\to\CLANNAD"
 ```
 
-然后双击运行（端口文件、语言、快进预算都设好了）。它等价于：
+然后双击运行。它等价于：
 
 ```powershell
 $env:CLANNAD_BRIDGE_PORT_FILE = "$env:TEMP\clannad_bridge.port"
@@ -58,10 +58,10 @@ $env:SIGLUS_LANGUAGE = "ZH"
 ```
 
 - `--bridge`：开启控制桥（MCP 必需）
-- `--auto-start`：自动从标题进 New Game 到第一句（省得手动点）
+- `--auto-start`：自动从标题进 New Game 到第一句
 - 引擎窗口必须保持开着（关掉窗口 = 退出）。可以把窗口最小化；不要用任务管理器结束它。
 
-> 不用 `run_engine.cmd`、自己手敲命令也可以，那就照上面三行设好环境变量（建议始终给 `CLANNAD_BRIDGE_PORT_FILE` 一个绝对路径）。
+> 不用 `run_engine.cmd`、手敲命令也可以，就照上面三行设好环境变量（建议始终给 `CLANNAD_BRIDGE_PORT_FILE` 一个绝对路径）。
 
 #### 第 3 步：安装 MCP 服务
 
@@ -104,21 +104,7 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 
 （放别处的话，`run_engine.cmd` 里的 `CLANNAD_BRIDGE_PORT_FILE` 也要改成同一个值。）
 
-不用 `uvx` 也可以（从源码/本地 venv 跑）：
 
-```json
-{
-  "mcpServers": {
-    "clannad": {
-      "command": "E:\\7_projects\\clannad_mcp\\mcp_server\\.venv\\Scripts\\python.exe",
-      "args": ["-m", "mcp_server.clannad_mcp"],
-      "env": {
-        "PYTHONPATH": "E:\\7_projects\\clannad_mcp\\mcp_server\\src"
-      }
-    }
-  }
-}
-```
 
 ## 3. 工具一览
 
