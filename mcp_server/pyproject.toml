@@ -1,6 +1,6 @@
 [project]
 name = "clannad-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP server for real-time control of CLANNAD (Steam ZH) running in the siglus_engine reimplementation"
 readme = "README.md"
 requires-python = ">=3.12"
