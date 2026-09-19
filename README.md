@@ -18,7 +18,7 @@
 - 跑 MCP 服务需要 Python ≥ 3.12；推荐装 [uv](https://docs.astral.sh/uv/)（`winget install astral-sh.uv` 或官方脚本）
 - 只有在你想自己编译引擎时才需要 Rust 工具链（普通用户直接下载 `siglus_engine.exe` 即可）
 
-## 2. 快速开始（3 步）
+## 2. 快速开始
 
 #### 第 0 步：准备游戏
 
@@ -103,6 +103,17 @@ uv tool install clannad-mcp     # 之后命令名就是 clannad-mcp
 ```
 
 （放别处的话，`run_engine.cmd` 里的 `CLANNAD_BRIDGE_PORT_FILE` 也要改成同一个值。）
+
+或者直接发给AI Agent让它自己安装。
+
+#### 第 4 步：游玩
+
+开始让AI游玩。
+
+我的提示词：
+```
+使用clannad-mcp游玩CLANNAD。目标：不联网查询攻略，像galgame玩家一样游玩，达成[结局]。你最多使用[_]个存档，最多进入坏结局/其他角色结局[_]次。推荐在markdown/mermaid中记录攻略过程。
+```
 
 
 
